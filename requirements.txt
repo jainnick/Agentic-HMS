@@ -1,0 +1,28 @@
+# Web API
+fastapi
+uvicorn[standard]
+
+# Configuration and validation
+pydantic
+pydantic-settings
+
+# Database and migrations
+SQLAlchemy
+asyncpg
+alembic
+
+# Logging
+structlog
+python-json-logger
+
+# HTTP client
+httpx
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+
+# Code quality
+ruff
+mypy 
