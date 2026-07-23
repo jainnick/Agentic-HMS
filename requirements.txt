@@ -13,7 +13,7 @@ alembic
 
 # Logging
 structlog
-python-json-logger
+
 
 # HTTP client
 httpx
