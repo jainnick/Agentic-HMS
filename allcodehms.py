@@ -1,11 +1,11 @@
 Directory structure:
 └── Agentic-HMS/
-    ├── create_repo_structure.py
     ├── README.md
     ├── requirements.txt
     └── hotel-agent-backend
         ├── .gitignore
         ├── alembic.ini
+        ├── APPLY_AND_VALIDATE.md
         ├── pyproject.toml
         ├── README.md
         ├── .github
@@ -24,9 +24,16 @@ Directory structure:
         │   │   ├── exceptions.py
         │   │   ├── logging.py
         │   │   └── middleware.py
-        │   └── db
+        │   ├── db
+        │   │   ├── __init__.py
+        │   │   ├── base.py
+        │   │   └── models..py
+        │   └── modules
         │       ├── __init__.py
-        │       └── base.py
+        │       └── tenancy
+        │           ├── __init__.py
+        │           ├── enums.py
+        │           └── models.py
         ├── migrations
         │   ├── env.py
         │   └── versions
@@ -39,201 +46,60 @@ Directory structure:
             └── unit
                 └── test_health.py
 
-Generated at: 2026-07-23 14:02:13
-Total files included: 26
-
-================================================
-FILE: create_repo_structure.py
-================================================
-#!/usr/bin/env python3
-"""
-Create the backend repository structure for the Agentic Hotel Management System.
-
-Default:
-    python create_repo_structure.py
-    Creates a `hotel-agent-backend` folder inside the current directory.
-
-Alternative:
-    python create_repo_structure.py --current
-    Creates the structure directly inside the current directory.
-
-Existing files and directories are never overwritten.
-"""
-
-from __future__ import annotations
-
-import argparse
-import sys
-from pathlib import Path
-
-
-PROJECT_NAME = "hotel-agent-backend"
-
-DIRECTORIES = [
-    "app",
-    "app/api",
-    "app/core",
-    "app/db",
-    "migrations",
-    "migrations/versions",
-    "tests",
-    "tests/unit",
-    "tests/integration",
-    ".github",
-    ".github/workflows",
-]
-
-FILES = [
-    "app/__init__.py",
-    "app/main.py",
-    "app/api/__init__.py",
-    "app/api/health.py",
-    "app/core/__init__.py",
-    "app/core/config.py",
-    "app/core/database.py",
-    "app/core/exceptions.py",
-    "app/core/logging.py",
-    "app/core/middleware.py",
-    "app/db/__init__.py",
-    "app/db/base.py",
-    "migrations/env.py",
-    "migrations/script.py.mako",
-    "tests/__init__.py",
-    "tests/conftest.py",
-    "tests/unit/test_health.py",
-    "tests/integration/test_database_health.py",
-    ".github/workflows/backend-ci.yml",
-    ".dockerignore",
-    ".env.example",
-    ".gitignore",
-    "alembic.ini",
-    "docker-compose.yml",
-    "Dockerfile",
-    "Makefile",
-    "pyproject.toml",
-    "README.md",
-]
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Create the hotel-agent-backend repository structure."
-    )
-    parser.add_argument(
-        "--current",
-        action="store_true",
-        help="Create the structure directly in the current directory.",
-    )
-    parser.add_argument(
-        "--root",
-        type=Path,
-        default=None,
-        help=(
-            "Optional parent or target directory. Without --current, the project "
-            "folder is created inside this path."
-        ),
-    )
-    return parser.parse_args()
-
-
-def resolve_target(args: argparse.Namespace) -> Path:
-    base_path = (args.root or Path.cwd()).expanduser().resolve()
-
-    if args.current:
-        return base_path
-
-    if base_path.name == PROJECT_NAME:
-        return base_path
-
-    return base_path / PROJECT_NAME
-
-
-def create_directory(path: Path) -> str:
-    if path.exists():
-        return "skipped" if path.is_dir() else "conflict"
-
-    path.mkdir(parents=True, exist_ok=True)
-    return "created"
-
-
-def create_file(path: Path) -> str:
-    if path.exists():
-        return "skipped" if path.is_file() else "conflict"
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
-    return "created"
-
-
-def main() -> int:
-    args = parse_args()
-    target = resolve_target(args)
-
-    counters = {
-        "created_directories": 0,
-        "skipped_directories": 0,
-        "created_files": 0,
-        "skipped_files": 0,
-        "conflicts": 0,
-    }
-
-    print(f"\nTarget repository: {target}\n")
-
-    for relative_path in DIRECTORIES:
-        path = target / relative_path
-        result = create_directory(path)
-
-        if result == "created":
-            counters["created_directories"] += 1
-            print(f"[CREATED DIR]  {path}")
-        elif result == "skipped":
-            counters["skipped_directories"] += 1
-            print(f"[SKIPPED DIR]  {path}")
-        else:
-            counters["conflicts"] += 1
-            print(f"[CONFLICT]     Expected directory but found file: {path}")
-
-    for relative_path in FILES:
-        path = target / relative_path
-        result = create_file(path)
-
-        if result == "created":
-            counters["created_files"] += 1
-            print(f"[CREATED FILE] {path}")
-        elif result == "skipped":
-            counters["skipped_files"] += 1
-            print(f"[SKIPPED FILE] {path}")
-        else:
-            counters["conflicts"] += 1
-            print(f"[CONFLICT]     Expected file but found directory: {path}")
-
-    print("\nSummary")
-    print("-" * 50)
-    print(f"Created directories : {counters['created_directories']}")
-    print(f"Skipped directories : {counters['skipped_directories']}")
-    print(f"Created files       : {counters['created_files']}")
-    print(f"Skipped files       : {counters['skipped_files']}")
-    print(f"Conflicts           : {counters['conflicts']}")
-    print(f"Repository path     : {target}")
-
-    if counters["conflicts"]:
-        print(
-            "\nCompleted with conflicts. Review the paths marked [CONFLICT].",
-            file=sys.stderr,
-        )
-        return 1
-
-    print("\nRepository structure created successfully.")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+Generated at: 2026-07-23 15:56:32
+Total files included: 31
 
 ================================================
 FILE: hotel-agent-backend/.github/workflows/backend-ci.yml
 ================================================
+name: Backend CI
 
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+  pull_request:
+
+jobs:
+  backend-quality:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: hotel-agent-backend
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Check formatting
+        run: python -m ruff format --check .
+
+      - name: Run linting
+        run: python -m ruff check .
+
+      - name: Run type checking
+        run: python -m mypy app
+
+      - name: Run unit tests
+        run: >
+          python -m pytest tests/unit
+          --cov=app
+          --cov-report=term-missing
+          --cov-fail-under=80
 
 ================================================
 FILE: hotel-agent-backend/.gitignore
@@ -436,7 +302,6 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.core.database import check_database_connection
 
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/health", tags=["Health"])
@@ -543,7 +408,6 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import get_settings
 
-
 settings = get_settings()
 
 database_url = make_url(settings.database_url).set(
@@ -584,9 +448,7 @@ async def check_database_connection() -> bool:
         value = await connection.scalar(text("SELECT 1"))
 
     if value != 1:
-        raise RuntimeError(
-            f"Unexpected database health-check value: {value!r}"
-        )
+        raise RuntimeError(f"Unexpected database health-check value: {value!r}")
 
     return True
 
@@ -656,7 +518,6 @@ from collections.abc import Awaitable, Callable
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-
 RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
@@ -703,6 +564,25 @@ class Base(DeclarativeBase):
     pass
 
 ================================================
+FILE: hotel-agent-backend/app/db/models..py
+================================================
+from app.db.base import Base
+from app.modules.tenancy.models import (
+    Organization,
+    OrganizationMembership,
+    Property,
+    PropertyMembership,
+)
+
+__all__ = [
+    "Base",
+    "Organization",
+    "OrganizationMembership",
+    "Property",
+    "PropertyMembership",
+]
+
+================================================
 FILE: hotel-agent-backend/app/main.py
 ================================================
 from collections.abc import AsyncIterator
@@ -713,9 +593,8 @@ from fastapi import FastAPI
 from app.api.health import router as health_router
 from app.core.config import get_settings
 from app.core.database import close_database_connections
-from app.core.middleware import RequestContextMiddleware
-
 from app.core.logging import configure_logging
+from app.core.middleware import RequestContextMiddleware
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -729,7 +608,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version=settings.app_version,
+    debug=settings.debug,
     description="Backend API for the Agentic Hotel Management System.",
     lifespan=lifespan,
 )
@@ -749,6 +629,451 @@ async def root() -> dict[str, str]:
     }
 
 ================================================
+FILE: hotel-agent-backend/app/modules/__init__.py
+================================================
+
+
+================================================
+FILE: hotel-agent-backend/app/modules/tenancy/__init__.py
+================================================
+
+
+================================================
+FILE: hotel-agent-backend/app/modules/tenancy/enums.py
+================================================
+from enum import StrEnum
+
+
+class LifecycleStatus(StrEnum):
+    """Lifecycle state for organizations, properties, and memberships."""
+
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class OrganizationRole(StrEnum):
+    """Roles granted at organization scope."""
+
+    ORGANIZATION_OWNER = "organization_owner"
+    VIEWER = "viewer"
+
+
+class PropertyRole(StrEnum):
+    """Roles granted at property scope."""
+
+    PROPERTY_MANAGER = "property_manager"
+    RESERVATION_MANAGER = "reservation_manager"
+    RESTAURANT_MANAGER = "restaurant_manager"
+    EVENT_MANAGER = "event_manager"
+    OPERATIONS_MANAGER = "operations_manager"
+    SUPPORT_AGENT = "support_agent"
+    VIEWER = "viewer"
+
+================================================
+FILE: hotel-agent-backend/app/modules/tenancy/models.py
+================================================
+from __future__ import annotations
+
+from datetime import datetime
+from typing import ClassVar
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base
+from app.modules.tenancy.enums import (
+    LifecycleStatus,
+    OrganizationRole,
+    PropertyRole,
+)
+
+class Organization(Base):
+    """A hotel company or hotel group."""
+
+    __tablename__ = "organizations"
+    __table_args__: ClassVar[tuple[object, ...]] = (
+        UniqueConstraint("slug", name="uq_organizations_slug"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[LifecycleStatus] = mapped_column(
+        Enum(
+            LifecycleStatus,
+            name="organization_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+        default=LifecycleStatus.ACTIVE,
+        server_default=LifecycleStatus.ACTIVE.value,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    properties: Mapped[list[Property]] = relationship(
+        back_populates="organization",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    memberships: Mapped[list[OrganizationMembership]] = relationship(
+        back_populates="organization",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class Property(Base):
+    """One physical hotel belonging to an organization."""
+
+    __tablename__ = "properties"
+    __table_args__: ClassVar[tuple[object, ...]] = (
+        UniqueConstraint(
+            "organization_id",
+            "code",
+            name="uq_properties_organization_id_code",
+        ),
+        # Required so PostgreSQL can target both columns from the composite
+        # property-membership foreign key.
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            name="uq_properties_organization_id_id",
+        ),
+        CheckConstraint(
+            "char_length(currency) = 3 AND currency = upper(currency)",
+            name="ck_properties_currency_code",
+        ),
+        CheckConstraint(
+            "char_length(timezone) > 0",
+            name="ck_properties_timezone_not_blank",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "organizations.id",
+            name="fk_properties_organization_id_organizations",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    status: Mapped[LifecycleStatus] = mapped_column(
+        Enum(
+            LifecycleStatus,
+            name="property_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+        default=LifecycleStatus.ACTIVE,
+        server_default=LifecycleStatus.ACTIVE.value,
+    )
+    # Supabase Auth user UUID. A direct auth.users foreign key is intentionally
+    # deferred because auth.users is outside this application's SQLAlchemy metadata.
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization: Mapped[Organization] = relationship(back_populates="properties")
+    memberships: Mapped[list[PropertyMembership]] = relationship(
+        back_populates="property",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class OrganizationMembership(Base):
+    """An authenticated Supabase user assigned to an organization."""
+
+    __tablename__ = "organization_memberships"
+    __table_args__: ClassVar[tuple[object, ...]] = (
+        UniqueConstraint(
+            "organization_id",
+            "user_id",
+            name="uq_organization_memberships_organization_id_user_id",
+        ),
+        Index("ix_organization_memberships_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "organizations.id",
+            name="fk_organization_memberships_organization_id_organizations",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    user_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    role: Mapped[OrganizationRole] = mapped_column(
+        Enum(
+            OrganizationRole,
+            name="organization_membership_role",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+    )
+    status: Mapped[LifecycleStatus] = mapped_column(
+        Enum(
+            LifecycleStatus,
+            name="organization_membership_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+        default=LifecycleStatus.ACTIVE,
+        server_default=LifecycleStatus.ACTIVE.value,
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    organization: Mapped[Organization] = relationship(back_populates="memberships")
+
+
+class PropertyMembership(Base):
+    """An authenticated Supabase user assigned to one hotel property."""
+
+    __tablename__ = "property_memberships"
+    __table_args__: ClassVar[tuple[object, ...]] = (
+        # This is the critical cross-organization safety constraint. The supplied
+        # organization_id and property_id must identify the same properties row.
+        ForeignKeyConstraint(
+            ["organization_id", "property_id"],
+            ["properties.organization_id", "properties.id"],
+            name="fk_property_memberships_property_organization",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "property_id",
+            "user_id",
+            name="uq_property_memberships_property_id_user_id",
+        ),
+        Index("ix_property_memberships_user_id", "user_id"),
+        Index(
+            "ix_property_memberships_organization_id_property_id",
+            "organization_id",
+            "property_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        nullable=False,
+    )
+    property_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        nullable=False,
+    )
+    user_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    role: Mapped[PropertyRole] = mapped_column(
+        Enum(
+            PropertyRole,
+            name="property_membership_role",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+    )
+    status: Mapped[LifecycleStatus] = mapped_column(
+        Enum(
+            LifecycleStatus,
+            name="property_membership_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+        default=LifecycleStatus.ACTIVE,
+        server_default=LifecycleStatus.ACTIVE.value,
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    property: Mapped[Property] = relationship(back_populates="memberships")
+
+================================================
+FILE: hotel-agent-backend/APPLY_AND_VALIDATE.md
+================================================
+# PR 2 Phase 2A — Apply and validate
+
+Run these commands from `hotel-agent-backend`.
+
+```powershell
+git switch -c feature/pr2-tenancy
+```
+
+Copy the supplied `app/` and `migrations/env.py` files into the repository.
+
+Verify model registration:
+
+```powershell
+python -c "from app.db.models import Base; print(sorted(Base.metadata.tables.keys()))"
+```
+
+Expected:
+
+```text
+['organization_memberships', 'organizations', 'properties', 'property_memberships']
+```
+
+Run static validation before contacting Supabase:
+
+```powershell
+python -m compileall app
+python -m ruff format .
+python -m ruff check .
+python -m mypy app
+```
+
+Generate, but do not immediately apply, the migration:
+
+```powershell
+alembic revision --autogenerate -m "create tenancy tables"
+```
+
+Review the new file in `migrations/versions/`. It should create only:
+
+- `organizations`
+- `properties`
+- `organization_memberships`
+- `property_memberships`
+- indexes and constraints belonging to those four tables
+
+Important constraints to confirm:
+
+- `uq_organizations_slug`
+- `uq_properties_organization_id_code`
+- `uq_properties_organization_id_id`
+- `uq_organization_memberships_organization_id_user_id`
+- `uq_property_memberships_property_id_user_id`
+- `fk_property_memberships_property_organization`
+- `ON DELETE CASCADE` on organization/property ownership constraints
+
+Also verify that downgrade drops child tables first:
+
+1. `property_memberships`
+2. `organization_memberships`
+3. `properties`
+4. `organizations`
+
+Then apply:
+
+```powershell
+alembic upgrade head
+alembic current
+```
+
+Do not create the same tables manually in Supabase.
+
+## Deliberate design decisions
+
+- Membership `status` was included because the next tenancy-context phase requires inactive memberships to be rejected.
+- User UUID columns are not yet foreign keys to `auth.users`. Supabase Auth is outside the application's SQLAlchemy metadata; authentication and RLS integration will be handled in the next phases.
+- IANA timezone validity should be enforced in the API schema/service layer. The database currently prevents only blank values.
+
+================================================
 FILE: hotel-agent-backend/migrations/env.py
 ================================================
 import asyncio
@@ -761,8 +1086,6 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
 from app.db.base import Base
-
-
 # Alembic configuration object created from alembic.ini.
 config = context.config
 
@@ -861,21 +1184,18 @@ FILE: hotel-agent-backend/migrations/versions/cdff641a8945_initialize_backend_fo
 """initialize backend foundation
 
 Revision ID: cdff641a8945
-Revises: 
+Revises:
 Create Date: 2026-07-23 13:01:36.414808
 
 """
-from typing import Sequence, Union
 
-from alembic import op
-import sqlalchemy as sa
-
+from collections.abc import Sequence
 
 # revision identifiers, used by Alembic.
-revision: str = 'cdff641a8945'
-down_revision: Union[str, Sequence[str], None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision: str = "cdff641a8945"
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -908,7 +1228,6 @@ dependencies = [
     "asyncpg",
     "alembic",
     "structlog",
-    "python-json-logger",
 ]
 
 [project.optional-dependencies]
@@ -961,9 +1280,6 @@ markers = [
 addopts = [
     "--strict-markers",
     "--strict-config",
-    "--cov=app",
-    "--cov-report=term-missing",
-    "--cov-fail-under=80",
 ]
 
 ================================================
@@ -986,13 +1302,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-
 # Unit tests should still load even when no local .env exists,
 # such as inside GitHub Actions.
 if "DATABASE_URL" not in os.environ and not Path(".env").exists():
-    os.environ["DATABASE_URL"] = (
-        "postgresql://postgres:postgres@localhost:5432/postgres"
-    )
+    os.environ["DATABASE_URL"] = "postgresql://postgres:postgres@localhost:5432/postgres"
 
 
 @pytest.fixture
@@ -1010,7 +1323,6 @@ FILE: hotel-agent-backend/tests/integration/test_database_health.py
 import os
 
 import pytest
-
 
 pytestmark = pytest.mark.integration
 
@@ -1031,7 +1343,6 @@ FILE: hotel-agent-backend/tests/unit/test_health.py
 ================================================
 import pytest
 from fastapi.testclient import TestClient
-
 
 LIVENESS_URL = "/health/live"
 READINESS_URL = "/health/ready"
