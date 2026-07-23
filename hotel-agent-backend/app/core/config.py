@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,25 @@ class Settings(BaseSettings):
     database_ssl_mode: str = "require"
 
     sql_echo: bool = False
+
+    # Supabase project configuration.
+    #
+    # These remain optional while authentication is being introduced so that
+    # existing health checks and unit tests can still start without Supabase
+    # Auth configuration. Protected routes will return 503 when they are absent.
+    supabase_url: str | None = None
+    supabase_anon_key: SecretStr | None = None
+    supabase_service_role_key: SecretStr | None = None
+
+    # Supabase user access tokens normally use "authenticated".
+    supabase_jwt_audience: str = "authenticated"
+
+    # These can be derived from SUPABASE_URL, but may be overridden.
+    supabase_jwt_issuer: str | None = None
+    supabase_jwks_url: str | None = None
+
+    # Small allowance for clock differences between systems.
+    supabase_jwt_leeway_seconds: int = 30
 
     model_config = SettingsConfigDict(
         env_file=".env",

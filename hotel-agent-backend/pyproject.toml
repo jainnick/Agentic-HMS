@@ -16,6 +16,7 @@ dependencies = [
     "asyncpg",
     "alembic",
     "structlog",
+    "pyjwt[crypto]>=2.10,<3",
 ]
 
 [project.optional-dependencies]

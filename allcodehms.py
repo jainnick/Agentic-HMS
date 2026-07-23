@@ -16,6 +16,7 @@ Directory structure:
         │   ├── main.py
         │   ├── api
         │   │   ├── __init__.py
+        │   │   ├── dependencies.py
         │   │   └── health.py
         │   ├── core
         │   │   ├── __init__.py
@@ -23,13 +24,19 @@ Directory structure:
         │   │   ├── database.py
         │   │   ├── exceptions.py
         │   │   ├── logging.py
-        │   │   └── middleware.py
+        │   │   ├── middleware.py
+        │   │   └── security.py
         │   ├── db
         │   │   ├── __init__.py
         │   │   ├── base.py
-        │   │   └── models..py
+        │   │   └── models.py
         │   └── modules
         │       ├── __init__.py
+        │       ├── identity
+        │       │   ├── __init__.py
+        │       │   ├── routes.py
+        │       │   ├── schemas.py
+        │       │   └── service.py
         │       └── tenancy
         │           ├── __init__.py
         │           ├── enums.py
@@ -37,17 +44,21 @@ Directory structure:
         ├── migrations
         │   ├── env.py
         │   └── versions
-        │       └── cdff641a8945_initialize_backend_foundation.py
+        │       ├── cdff641a8945_initialize_backend_foundation.py
+        │       └── f97cc2fbe621_create_tenancy_tables.py
         └── tests
             ├── __init__.py
             ├── conftest.py
             ├── integration
-            │   └── test_database_health.py
+            │   ├── conftest.py
+            │   ├── test_database_health.py
+            │   └── test_tenancy_models.py
             └── unit
+                ├── test_auth_dependencies.py
                 └── test_health.py
 
-Generated at: 2026-07-23 15:56:32
-Total files included: 31
+Generated at: 2026-07-23 18:32:39
+Total files included: 41
 
 ================================================
 FILE: hotel-agent-backend/.github/workflows/backend-ci.yml
@@ -293,6 +304,95 @@ FILE: hotel-agent-backend/app/api/__init__.py
 
 
 ================================================
+FILE: hotel-agent-backend/app/api/dependencies.py
+================================================
+from typing import Annotated
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+)
+
+from app.core.security import (
+    AuthConfigurationError,
+    TokenValidationError,
+    decode_access_token,
+)
+from app.modules.identity.schemas import CurrentUser
+from app.modules.identity.service import (
+    InvalidIdentityClaimsError,
+    create_current_user,
+)
+
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    scheme_name="Supabase access token",
+)
+
+
+def authentication_required_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required.",
+        headers={
+            "WWW-Authenticate": "Bearer",
+        },
+    )
+
+
+def invalid_token_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid authentication token.",
+        headers={
+            "WWW-Authenticate": "Bearer",
+        },
+    )
+
+
+async def get_current_user(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+) -> CurrentUser:
+    """Validate a Bearer token and return the authenticated user."""
+
+    if credentials is None:
+        raise authentication_required_error()
+
+    if credentials.scheme.lower() != "bearer":
+        raise authentication_required_error()
+
+    try:
+        claims = await decode_access_token(
+            credentials.credentials,
+        )
+
+        return create_current_user(claims)
+
+    except AuthConfigurationError as exc:
+        # This is a server configuration problem, not a user authentication
+        # failure, so return 503 instead of 401.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service is not configured.",
+        ) from exc
+
+    except (
+        TokenValidationError,
+        InvalidIdentityClaimsError,
+    ) as exc:
+        raise invalid_token_error() from exc
+
+
+CurrentUserDependency = Annotated[
+    CurrentUser,
+    Depends(get_current_user),
+]
+
+================================================
 FILE: hotel-agent-backend/app/api/health.py
 ================================================
 import asyncio
@@ -360,6 +460,7 @@ FILE: hotel-agent-backend/app/core/config.py
 ================================================
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -380,6 +481,25 @@ class Settings(BaseSettings):
     database_ssl_mode: str = "require"
 
     sql_echo: bool = False
+
+    # Supabase project configuration.
+    #
+    # These remain optional while authentication is being introduced so that
+    # existing health checks and unit tests can still start without Supabase
+    # Auth configuration. Protected routes will return 503 when they are absent.
+    supabase_url: str | None = None
+    supabase_anon_key: SecretStr | None = None
+    supabase_service_role_key: SecretStr | None = None
+
+    # Supabase user access tokens normally use "authenticated".
+    supabase_jwt_audience: str = "authenticated"
+
+    # These can be derived from SUPABASE_URL, but may be overridden.
+    supabase_jwt_issuer: str | None = None
+    supabase_jwks_url: str | None = None
+
+    # Small allowance for clock differences between systems.
+    supabase_jwt_leeway_seconds: int = 30
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -548,6 +668,147 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         return response
 
 ================================================
+FILE: hotel-agent-backend/app/core/security.py
+================================================
+import asyncio
+from functools import lru_cache
+from typing import Any
+
+import jwt
+from jwt import PyJWKClient
+from jwt.exceptions import InvalidTokenError, PyJWKClientError
+
+from app.core.config import Settings, get_settings
+
+# Only asymmetric algorithms supported by this backend are allowed.
+#
+# Do not derive this list from the incoming JWT header.
+ALLOWED_JWT_ALGORITHMS = ["ES256", "RS256"]
+
+
+class AuthConfigurationError(RuntimeError):
+    """Raised when required authentication settings are missing."""
+
+
+class TokenValidationError(ValueError):
+    """Raised when a supplied access token cannot be trusted."""
+
+
+def resolve_auth_configuration(
+    settings: Settings,
+) -> tuple[str, str, str, int]:
+    """Resolve audience, issuer, JWKS URL, and clock leeway."""
+
+    supabase_url = (settings.supabase_url or "").strip().rstrip("/")
+
+    if not supabase_url:
+        raise AuthConfigurationError(
+            "SUPABASE_URL is not configured.",
+        )
+
+    audience = settings.supabase_jwt_audience.strip()
+
+    if not audience:
+        raise AuthConfigurationError(
+            "SUPABASE_JWT_AUDIENCE is not configured.",
+        )
+
+    issuer = (
+        settings.supabase_jwt_issuer.strip().rstrip("/")
+        if settings.supabase_jwt_issuer
+        else f"{supabase_url}/auth/v1"
+    )
+
+    jwks_url = (
+        settings.supabase_jwks_url.strip()
+        if settings.supabase_jwks_url
+        else f"{issuer}/.well-known/jwks.json"
+    )
+
+    return (
+        audience,
+        issuer,
+        jwks_url,
+        settings.supabase_jwt_leeway_seconds,
+    )
+
+
+@lru_cache(maxsize=4)
+def get_jwks_client(
+    jwks_url: str,
+) -> PyJWKClient:
+    """Create and cache a JWKS client for a Supabase project."""
+
+    return PyJWKClient(
+        jwks_url,
+        cache_keys=True,
+    )
+
+
+def decode_access_token_sync(
+    token: str,
+) -> dict[str, Any]:
+    """Synchronously verify a Supabase access token."""
+
+    if not token.strip():
+        raise TokenValidationError(
+            "Access token is empty.",
+        )
+
+    settings = get_settings()
+
+    audience, issuer, jwks_url, leeway = resolve_auth_configuration(
+        settings,
+    )
+
+    try:
+        jwks_client = get_jwks_client(jwks_url)
+
+        # PyJWT reads the JWT header, obtains the key ID (kid), downloads the
+        # matching public key from Supabase JWKS, and returns that signing key.
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+
+        claims = jwt.decode(
+            jwt=token,
+            key=signing_key.key,
+            algorithms=ALLOWED_JWT_ALGORITHMS,
+            audience=audience,
+            issuer=issuer,
+            leeway=leeway,
+            options={
+                "require": [
+                    "exp",
+                    "iss",
+                    "aud",
+                    "sub",
+                ],
+            },
+        )
+
+    except (InvalidTokenError, PyJWKClientError) as exc:
+        raise TokenValidationError(
+            "Access token is invalid or expired.",
+        ) from exc
+
+    if not isinstance(claims, dict):
+        raise TokenValidationError(
+            "Access token claims are invalid.",
+        )
+
+    return claims
+
+
+async def decode_access_token(
+    token: str,
+) -> dict[str, Any]:
+    """Verify a Supabase access token without blocking FastAPI's event loop."""
+
+    return await asyncio.to_thread(
+        decode_access_token_sync,
+        token,
+    )
+
+================================================
 FILE: hotel-agent-backend/app/db/__init__.py
 ================================================
 
@@ -564,7 +825,7 @@ class Base(DeclarativeBase):
     pass
 
 ================================================
-FILE: hotel-agent-backend/app/db/models..py
+FILE: hotel-agent-backend/app/db/models.py
 ================================================
 from app.db.base import Base
 from app.modules.tenancy.models import (
@@ -595,6 +856,7 @@ from app.core.config import get_settings
 from app.core.database import close_database_connections
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
+from app.modules.identity.routes import router as identity_router
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -620,6 +882,15 @@ app.include_router(
 
 app.add_middleware(RequestContextMiddleware)
 
+app.include_router(
+    health_router,
+)
+
+app.include_router(
+    identity_router,
+    prefix=settings.api_v1_prefix,
+)
+
 
 @app.get("/")
 async def root() -> dict[str, str]:
@@ -632,6 +903,106 @@ async def root() -> dict[str, str]:
 FILE: hotel-agent-backend/app/modules/__init__.py
 ================================================
 
+
+================================================
+FILE: hotel-agent-backend/app/modules/identity/__init__.py
+================================================
+
+
+================================================
+FILE: hotel-agent-backend/app/modules/identity/routes.py
+================================================
+from fastapi import APIRouter
+
+from app.api.dependencies import CurrentUserDependency
+from app.modules.identity.schemas import CurrentUser
+
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"],
+)
+
+
+@router.get(
+    "/me",
+    response_model=CurrentUser,
+)
+async def get_authenticated_user(
+    current_user: CurrentUserDependency,
+) -> CurrentUser:
+    """Return the authenticated Supabase user's identity."""
+
+    return current_user
+
+================================================
+FILE: hotel-agent-backend/app/modules/identity/schemas.py
+================================================
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+
+class CurrentUser(BaseModel):
+    """Authenticated Supabase user available inside backend requests."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    email: str | None = None
+
+    # This is the Supabase/Postgres auth role, normally "authenticated".
+    # It is not the hotel role such as property_manager.
+    auth_role: str
+
+================================================
+FILE: hotel-agent-backend/app/modules/identity/service.py
+================================================
+from collections.abc import Mapping
+from typing import Any
+from uuid import UUID
+
+from app.modules.identity.schemas import CurrentUser
+
+
+class InvalidIdentityClaimsError(ValueError):
+    """Raised when trusted JWT claims cannot identify a valid user."""
+
+
+def create_current_user(
+    claims: Mapping[str, Any],
+) -> CurrentUser:
+    """Create an application user from validated Supabase JWT claims."""
+
+    subject = claims.get("sub")
+
+    if not isinstance(subject, str) or not subject.strip():
+        raise InvalidIdentityClaimsError(
+            "JWT subject claim is missing.",
+        )
+
+    try:
+        user_id = UUID(subject)
+    except ValueError as exc:
+        raise InvalidIdentityClaimsError(
+            "JWT subject is not a valid UUID.",
+        ) from exc
+
+    auth_role = claims.get("role")
+
+    if not isinstance(auth_role, str) or not auth_role.strip():
+        raise InvalidIdentityClaimsError(
+            "JWT role claim is missing.",
+        )
+
+    email_claim = claims.get("email")
+
+    email = email_claim if isinstance(email_claim, str) else None
+
+    return CurrentUser(
+        id=user_id,
+        email=email,
+        auth_role=auth_role,
+    )
 
 ================================================
 FILE: hotel-agent-backend/app/modules/tenancy/__init__.py
@@ -675,7 +1046,6 @@ FILE: hotel-agent-backend/app/modules/tenancy/models.py
 from __future__ import annotations
 
 from datetime import datetime
-from typing import ClassVar
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -700,13 +1070,12 @@ from app.modules.tenancy.enums import (
     PropertyRole,
 )
 
+
 class Organization(Base):
     """A hotel company or hotel group."""
 
     __tablename__ = "organizations"
-    __table_args__: ClassVar[tuple[object, ...]] = (
-        UniqueConstraint("slug", name="uq_organizations_slug"),
-    )
+    __table_args__ = (UniqueConstraint("slug", name="uq_organizations_slug"),)
 
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -757,7 +1126,7 @@ class Property(Base):
     """One physical hotel belonging to an organization."""
 
     __tablename__ = "properties"
-    __table_args__: ClassVar[tuple[object, ...]] = (
+    __table_args__ = (
         UniqueConstraint(
             "organization_id",
             "code",
@@ -842,7 +1211,7 @@ class OrganizationMembership(Base):
     """An authenticated Supabase user assigned to an organization."""
 
     __tablename__ = "organization_memberships"
-    __table_args__: ClassVar[tuple[object, ...]] = (
+    __table_args__ = (
         UniqueConstraint(
             "organization_id",
             "user_id",
@@ -914,7 +1283,7 @@ class PropertyMembership(Base):
     """An authenticated Supabase user assigned to one hotel property."""
 
     __tablename__ = "property_memberships"
-    __table_args__: ClassVar[tuple[object, ...]] = (
+    __table_args__ = (
         # This is the critical cross-organization safety constraint. The supplied
         # organization_id and property_id must identify the same properties row.
         ForeignKeyConstraint(
@@ -1085,7 +1454,8 @@ from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
-from app.db.base import Base
+from app.db.models import Base
+
 # Alembic configuration object created from alembic.ini.
 config = context.config
 
@@ -1208,6 +1578,251 @@ def downgrade() -> None:
     pass
 
 ================================================
+FILE: hotel-agent-backend/migrations/versions/f97cc2fbe621_create_tenancy_tables.py
+================================================
+"""create tenancy tables
+
+Revision ID: f97cc2fbe621
+Revises: cdff641a8945
+Create Date: 2026-07-23 16:12:05.072780
+
+"""
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
+from alembic import op
+
+# revision identifiers, used by Alembic.
+revision: str = "f97cc2fbe621"
+down_revision: str | Sequence[str] | None = "cdff641a8945"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table(
+        "organizations",
+        sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("name", sa.String(length=255), nullable=False),
+        sa.Column("slug", sa.String(length=120), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "active",
+                "inactive",
+                name="organization_status",
+                native_enum=False,
+                create_constraint=True,
+            ),
+            server_default="active",
+            nullable=False,
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("slug", name="uq_organizations_slug"),
+    )
+    op.create_table(
+        "organization_memberships",
+        sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("organization_id", sa.UUID(), nullable=False),
+        sa.Column("user_id", sa.UUID(), nullable=False),
+        sa.Column(
+            "role",
+            sa.Enum(
+                "organization_owner",
+                "viewer",
+                name="organization_membership_role",
+                native_enum=False,
+                create_constraint=True,
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "active",
+                "inactive",
+                name="organization_membership_status",
+                native_enum=False,
+                create_constraint=True,
+            ),
+            server_default="active",
+            nullable=False,
+        ),
+        sa.Column("created_by", sa.UUID(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            ["organization_id"],
+            ["organizations.id"],
+            name="fk_organization_memberships_organization_id_organizations",
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "organization_id", "user_id", name="uq_organization_memberships_organization_id_user_id"
+        ),
+    )
+    op.create_index(
+        "ix_organization_memberships_user_id", "organization_memberships", ["user_id"], unique=False
+    )
+    op.create_table(
+        "properties",
+        sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("organization_id", sa.UUID(), nullable=False),
+        sa.Column("name", sa.String(length=255), nullable=False),
+        sa.Column("code", sa.String(length=64), nullable=False),
+        sa.Column("timezone", sa.String(length=64), nullable=False),
+        sa.Column("currency", sa.String(length=3), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "active",
+                "inactive",
+                name="property_status",
+                native_enum=False,
+                create_constraint=True,
+            ),
+            server_default="active",
+            nullable=False,
+        ),
+        sa.Column("created_by", sa.UUID(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "char_length(currency) = 3 AND currency = upper(currency)",
+            name="ck_properties_currency_code",
+        ),
+        sa.CheckConstraint("char_length(timezone) > 0", name="ck_properties_timezone_not_blank"),
+        sa.ForeignKeyConstraint(
+            ["organization_id"],
+            ["organizations.id"],
+            name="fk_properties_organization_id_organizations",
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("organization_id", "code", name="uq_properties_organization_id_code"),
+        sa.UniqueConstraint("organization_id", "id", name="uq_properties_organization_id_id"),
+    )
+    op.create_table(
+        "property_memberships",
+        sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("organization_id", sa.UUID(), nullable=False),
+        sa.Column("property_id", sa.UUID(), nullable=False),
+        sa.Column("user_id", sa.UUID(), nullable=False),
+        sa.Column(
+            "role",
+            sa.Enum(
+                "property_manager",
+                "reservation_manager",
+                "restaurant_manager",
+                "event_manager",
+                "operations_manager",
+                "support_agent",
+                "viewer",
+                name="property_membership_role",
+                native_enum=False,
+                create_constraint=True,
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "active",
+                "inactive",
+                name="property_membership_status",
+                native_enum=False,
+                create_constraint=True,
+            ),
+            server_default="active",
+            nullable=False,
+        ),
+        sa.Column("created_by", sa.UUID(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            ["organization_id", "property_id"],
+            ["properties.organization_id", "properties.id"],
+            name="fk_property_memberships_property_organization",
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "property_id", "user_id", name="uq_property_memberships_property_id_user_id"
+        ),
+    )
+    op.create_index(
+        "ix_property_memberships_organization_id_property_id",
+        "property_memberships",
+        ["organization_id", "property_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_property_memberships_user_id", "property_memberships", ["user_id"], unique=False
+    )
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index("ix_property_memberships_user_id", table_name="property_memberships")
+    op.drop_index(
+        "ix_property_memberships_organization_id_property_id", table_name="property_memberships"
+    )
+    op.drop_table("property_memberships")
+    op.drop_table("properties")
+    op.drop_index("ix_organization_memberships_user_id", table_name="organization_memberships")
+    op.drop_table("organization_memberships")
+    op.drop_table("organizations")
+    # ### end Alembic commands ###
+
+================================================
 FILE: hotel-agent-backend/pyproject.toml
 ================================================
 [build-system]
@@ -1228,6 +1843,7 @@ dependencies = [
     "asyncpg",
     "alembic",
     "structlog",
+    "pyjwt[crypto]>=2.10,<3",
 ]
 
 [project.optional-dependencies]
@@ -1274,6 +1890,8 @@ exclude = ["migrations/versions/"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 markers = [
     "integration: tests that require a real Supabase database connection",
 ]
@@ -1318,6 +1936,38 @@ def client() -> Generator[TestClient, None, None]:
         yield test_client
 
 ================================================
+FILE: hotel-agent-backend/tests/integration/conftest.py
+================================================
+from collections.abc import AsyncIterator
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import engine
+
+
+@pytest.fixture
+async def db_session() -> AsyncIterator[AsyncSession]:
+    """Provide an isolated database transaction for each integration test."""
+
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+
+        session = AsyncSession(
+            bind=connection,
+            expire_on_commit=False,
+            autoflush=False,
+        )
+
+        try:
+            yield session
+        finally:
+            await session.close()
+
+            if transaction.is_active:
+                await transaction.rollback()
+
+================================================
 FILE: hotel-agent-backend/tests/integration/test_database_health.py
 ================================================
 import os
@@ -1337,6 +1987,504 @@ async def test_real_supabase_database_connection() -> None:
     connected = await check_database_connection()
 
     assert connected is True
+
+================================================
+FILE: hotel-agent-backend/tests/integration/test_tenancy_models.py
+================================================
+import os
+from uuid import UUID, uuid4
+
+import pytest
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.tenancy.enums import (
+    OrganizationRole,
+    PropertyRole,
+)
+from app.modules.tenancy.models import (
+    Organization,
+    OrganizationMembership,
+    Property,
+    PropertyMembership,
+)
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("RUN_INTEGRATION_TESTS") != "1",
+        reason="Set RUN_INTEGRATION_TESTS=1 to run Supabase integration tests.",
+    ),
+]
+
+
+def unique_value(prefix: str) -> str:
+    """Create a unique value to avoid collisions with previous test runs."""
+
+    return f"{prefix}-{uuid4().hex[:12]}"
+
+
+async def create_organization(
+    session: AsyncSession,
+    *,
+    name: str | None = None,
+    slug: str | None = None,
+) -> Organization:
+    organization = Organization(
+        name=name or "Integration Test Organization",
+        slug=slug or unique_value("test-organization"),
+    )
+
+    session.add(organization)
+    await session.flush()
+
+    return organization
+
+
+async def create_property(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    code: str | None = None,
+    created_by: UUID | None = None,
+) -> Property:
+    property_ = Property(
+        organization_id=organization_id,
+        name="Integration Test Property",
+        code=code or unique_value("property"),
+        timezone="Asia/Kolkata",
+        currency="INR",
+        created_by=created_by or uuid4(),
+    )
+
+    session.add(property_)
+    await session.flush()
+
+    return property_
+
+
+async def create_organization_membership(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    user_id: UUID | None = None,
+    role: OrganizationRole = OrganizationRole.ORGANIZATION_OWNER,
+    created_by: UUID | None = None,
+) -> OrganizationMembership:
+    membership = OrganizationMembership(
+        organization_id=organization_id,
+        user_id=user_id or uuid4(),
+        role=role,
+        created_by=created_by or uuid4(),
+    )
+
+    session.add(membership)
+    await session.flush()
+
+    return membership
+
+
+async def create_property_membership(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    property_id: UUID,
+    user_id: UUID | None = None,
+    role: PropertyRole = PropertyRole.PROPERTY_MANAGER,
+    created_by: UUID | None = None,
+) -> PropertyMembership:
+    membership = PropertyMembership(
+        organization_id=organization_id,
+        property_id=property_id,
+        user_id=user_id or uuid4(),
+        role=role,
+        created_by=created_by or uuid4(),
+    )
+
+    session.add(membership)
+    await session.flush()
+
+    return membership
+
+
+async def test_organization_can_be_created(
+    db_session: AsyncSession,
+) -> None:
+    organization = await create_organization(db_session)
+
+    assert organization.id is not None
+    assert organization.name == "Integration Test Organization"
+    assert organization.slug.startswith("test-organization-")
+
+
+async def test_property_can_belong_to_organization(
+    db_session: AsyncSession,
+) -> None:
+    organization = await create_organization(db_session)
+
+    property_ = await create_property(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    assert property_.id is not None
+    assert property_.organization_id == organization.id
+    assert property_.timezone == "Asia/Kolkata"
+    assert property_.currency == "INR"
+
+
+async def test_duplicate_organization_slug_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    duplicate_slug = unique_value("duplicate-slug")
+
+    await create_organization(
+        db_session,
+        name="Organization One",
+        slug=duplicate_slug,
+    )
+
+    duplicate_organization = Organization(
+        name="Organization Two",
+        slug=duplicate_slug,
+    )
+
+    db_session.add(duplicate_organization)
+
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+    await db_session.rollback()
+
+
+async def test_duplicate_property_code_in_same_organization_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    organization = await create_organization(db_session)
+    duplicate_code = unique_value("hotel")
+
+    await create_property(
+        db_session,
+        organization_id=organization.id,
+        code=duplicate_code,
+    )
+
+    duplicate_property = Property(
+        organization_id=organization.id,
+        name="Duplicate Property",
+        code=duplicate_code,
+        timezone="Asia/Kolkata",
+        currency="INR",
+        created_by=uuid4(),
+    )
+
+    db_session.add(duplicate_property)
+
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+    await db_session.rollback()
+
+
+async def test_same_property_code_in_different_organizations_is_allowed(
+    db_session: AsyncSession,
+) -> None:
+    organization_a = await create_organization(
+        db_session,
+        name="Organization A",
+    )
+    organization_b = await create_organization(
+        db_session,
+        name="Organization B",
+    )
+
+    shared_code = unique_value("shared-hotel")
+
+    property_a = await create_property(
+        db_session,
+        organization_id=organization_a.id,
+        code=shared_code,
+    )
+    property_b = await create_property(
+        db_session,
+        organization_id=organization_b.id,
+        code=shared_code,
+    )
+
+    assert property_a.code == property_b.code
+    assert property_a.organization_id != property_b.organization_id
+
+
+async def test_duplicate_organization_membership_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    organization = await create_organization(db_session)
+    user_id = uuid4()
+
+    await create_organization_membership(
+        db_session,
+        organization_id=organization.id,
+        user_id=user_id,
+    )
+
+    duplicate_membership = OrganizationMembership(
+        organization_id=organization.id,
+        user_id=user_id,
+        role=OrganizationRole.VIEWER,
+        created_by=uuid4(),
+    )
+
+    db_session.add(duplicate_membership)
+
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+    await db_session.rollback()
+
+
+async def test_duplicate_property_membership_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    organization = await create_organization(db_session)
+
+    property_ = await create_property(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    user_id = uuid4()
+
+    await create_property_membership(
+        db_session,
+        organization_id=organization.id,
+        property_id=property_.id,
+        user_id=user_id,
+    )
+
+    duplicate_membership = PropertyMembership(
+        organization_id=organization.id,
+        property_id=property_.id,
+        user_id=user_id,
+        role=PropertyRole.VIEWER,
+        created_by=uuid4(),
+    )
+
+    db_session.add(duplicate_membership)
+
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+    await db_session.rollback()
+
+
+async def test_property_membership_cannot_mix_organizations(
+    db_session: AsyncSession,
+) -> None:
+    organization_a = await create_organization(
+        db_session,
+        name="Organization A",
+    )
+    organization_b = await create_organization(
+        db_session,
+        name="Organization B",
+    )
+
+    property_b = await create_property(
+        db_session,
+        organization_id=organization_b.id,
+    )
+
+    invalid_membership = PropertyMembership(
+        organization_id=organization_a.id,
+        property_id=property_b.id,
+        user_id=uuid4(),
+        role=PropertyRole.PROPERTY_MANAGER,
+        created_by=uuid4(),
+    )
+
+    db_session.add(invalid_membership)
+
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+
+    await db_session.rollback()
+
+
+async def test_deleting_organization_cascades_dependent_records(
+    db_session: AsyncSession,
+) -> None:
+    organization = await create_organization(db_session)
+
+    property_ = await create_property(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    await create_organization_membership(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    await create_property_membership(
+        db_session,
+        organization_id=organization.id,
+        property_id=property_.id,
+    )
+
+    await db_session.execute(
+        delete(Organization).where(
+            Organization.id == organization.id,
+        )
+    )
+    await db_session.flush()
+
+    property_count = await db_session.scalar(
+        select(func.count())
+        .select_from(Property)
+        .where(Property.organization_id == organization.id)
+    )
+
+    organization_membership_count = await db_session.scalar(
+        select(func.count())
+        .select_from(OrganizationMembership)
+        .where(
+            OrganizationMembership.organization_id == organization.id,
+        )
+    )
+
+    property_membership_count = await db_session.scalar(
+        select(func.count())
+        .select_from(PropertyMembership)
+        .where(
+            PropertyMembership.organization_id == organization.id,
+        )
+    )
+
+    assert property_count == 0
+    assert organization_membership_count == 0
+    assert property_membership_count == 0
+
+================================================
+FILE: hotel-agent-backend/tests/unit/test_auth_dependencies.py
+================================================
+from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.security import TokenValidationError
+
+AUTH_ME_URL = "/api/v1/auth/me"
+
+
+def test_auth_me_requires_token(
+    client: TestClient,
+) -> None:
+    response = client.get(AUTH_ME_URL)
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Authentication required.",
+    }
+
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_auth_me_returns_authenticated_user(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid4()
+
+    async def valid_token_decoder(
+        token: str,
+    ) -> dict[str, object]:
+        assert token == "valid-test-token"
+
+        return {
+            "sub": str(user_id),
+            "email": "manager@example.com",
+            "role": "authenticated",
+        }
+
+    monkeypatch.setattr(
+        "app.api.dependencies.decode_access_token",
+        valid_token_decoder,
+    )
+
+    response = client.get(
+        AUTH_ME_URL,
+        headers={
+            "Authorization": "Bearer valid-test-token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": str(user_id),
+        "email": "manager@example.com",
+        "auth_role": "authenticated",
+    }
+
+
+def test_auth_me_rejects_invalid_token(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def invalid_token_decoder(
+        _: str,
+    ) -> dict[str, object]:
+        raise TokenValidationError(
+            "Token validation failed.",
+        )
+
+    monkeypatch.setattr(
+        "app.api.dependencies.decode_access_token",
+        invalid_token_decoder,
+    )
+
+    response = client.get(
+        AUTH_ME_URL,
+        headers={
+            "Authorization": "Bearer invalid-test-token",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Invalid authentication token.",
+    }
+
+
+def test_auth_me_rejects_malformed_user_claims(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def malformed_claims_decoder(
+        _: str,
+    ) -> dict[str, object]:
+        return {
+            "sub": "not-a-uuid",
+            "role": "authenticated",
+        }
+
+    monkeypatch.setattr(
+        "app.api.dependencies.decode_access_token",
+        malformed_claims_decoder,
+    )
+
+    response = client.get(
+        AUTH_ME_URL,
+        headers={
+            "Authorization": "Bearer malformed-user-token",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "Invalid authentication token.",
+    }
 
 ================================================
 FILE: hotel-agent-backend/tests/unit/test_health.py
