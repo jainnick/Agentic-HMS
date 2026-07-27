@@ -9,6 +9,7 @@ from app.core.database import close_database_connections
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.modules.identity.routes import router as identity_router
+from app.modules.onboarding.routes import router as onboarding_router
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -28,7 +29,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(RequestContextMiddleware)
+app.add_middleware(
+    RequestContextMiddleware,
+)
 
 app.include_router(
     health_router,
@@ -36,6 +39,11 @@ app.include_router(
 
 app.include_router(
     identity_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    onboarding_router,
     prefix=settings.api_v1_prefix,
 )
 

@@ -8,15 +8,25 @@ from app.core.database import engine
 
 @pytest.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
-    """Provide an isolated database transaction for each integration test."""
+    """
+    Provide an isolated database session for each integration test.
+
+    Application services may call session.commit(). The session therefore
+    uses a savepoint so those service commits do not commit the fixture's
+    outer transaction.
+
+    At the end of every test, rolling back the outer transaction removes
+    everything created by that test.
+    """
 
     async with engine.connect() as connection:
-        transaction = await connection.begin()
+        outer_transaction = await connection.begin()
 
         session = AsyncSession(
             bind=connection,
             expire_on_commit=False,
             autoflush=False,
+            join_transaction_mode="create_savepoint",
         )
 
         try:
@@ -24,5 +34,5 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
 
-            if transaction.is_active:
-                await transaction.rollback()
+            if outer_transaction.is_active:
+                await outer_transaction.rollback()

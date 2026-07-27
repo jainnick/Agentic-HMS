@@ -5,6 +5,7 @@ uvicorn[standard]
 # Configuration and validation
 pydantic
 pydantic-settings
+tzdata
 
 # Database and migrations
 SQLAlchemy

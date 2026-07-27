@@ -37,13 +37,21 @@ Directory structure:
         │       │   ├── routes.py
         │       │   ├── schemas.py
         │       │   └── service.py
+        │       ├── onboarding
+        │       │   ├── __init__.py
+        │       │   ├── routes.py
+        │       │   ├── schemas.py
+        │       │   └── service.py
         │       └── tenancy
         │           ├── __init__.py
+        │           ├── context.py
         │           ├── enums.py
-        │           └── models.py
+        │           ├── models.py
+        │           └── service.py
         ├── migrations
         │   ├── env.py
         │   └── versions
+        │       ├── a81c4f6b2d90_add_initial_tenant_rls.py
         │       ├── cdff641a8945_initialize_backend_foundation.py
         │       └── f97cc2fbe621_create_tenancy_tables.py
         └── tests
@@ -52,13 +60,17 @@ Directory structure:
             ├── integration
             │   ├── conftest.py
             │   ├── test_database_health.py
-            │   └── test_tenancy_models.py
+            │   ├── test_onboarding_service.py
+            │   ├── test_tenancy_models.py
+            │   └── test_tenant_context.py
             └── unit
                 ├── test_auth_dependencies.py
-                └── test_health.py
+                ├── test_health.py
+                ├── test_onboarding_schemas.py
+                └── test_tenant_permissions.py
 
-Generated at: 2026-07-23 18:32:39
-Total files included: 41
+Generated at: 2026-07-27 16:46:09
+Total files included: 52
 
 ================================================
 FILE: hotel-agent-backend/.github/workflows/backend-ci.yml
@@ -307,13 +319,16 @@ FILE: hotel-agent-backend/app/api/__init__.py
 FILE: hotel-agent-backend/app/api/dependencies.py
 ================================================
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import (
     HTTPAuthorizationCredentials,
     HTTPBearer,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db_session
 from app.core.security import (
     AuthConfigurationError,
     TokenValidationError,
@@ -324,6 +339,12 @@ from app.modules.identity.service import (
     InvalidIdentityClaimsError,
     create_current_user,
 )
+from app.modules.tenancy.context import TenantContext
+from app.modules.tenancy.service import (
+    TenantAccessDeniedError,
+    TenantResourceNotFoundError,
+    resolve_tenant_context,
+)
 
 bearer_scheme = HTTPBearer(
     auto_error=False,
@@ -332,6 +353,8 @@ bearer_scheme = HTTPBearer(
 
 
 def authentication_required_error() -> HTTPException:
+    """Return a standard response when authentication is missing."""
+
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authentication required.",
@@ -342,6 +365,8 @@ def authentication_required_error() -> HTTPException:
 
 
 def invalid_token_error() -> HTTPException:
+    """Return a standard response when a token cannot be trusted."""
+
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid authentication token.",
@@ -357,7 +382,12 @@ async def get_current_user(
         Depends(bearer_scheme),
     ],
 ) -> CurrentUser:
-    """Validate a Bearer token and return the authenticated user."""
+    """
+    Validate a Supabase access token and return the authenticated user.
+
+    This dependency identifies the user only. Tenant access is resolved
+    separately through get_tenant_context().
+    """
 
     if credentials is None:
         raise authentication_required_error()
@@ -370,11 +400,11 @@ async def get_current_user(
             credentials.credentials,
         )
 
-        return create_current_user(claims)
+        return create_current_user(
+            claims,
+        )
 
     except AuthConfigurationError as exc:
-        # This is a server configuration problem, not a user authentication
-        # failure, so return 503 instead of 401.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service is not configured.",
@@ -390,6 +420,64 @@ async def get_current_user(
 CurrentUserDependency = Annotated[
     CurrentUser,
     Depends(get_current_user),
+]
+
+
+DatabaseSessionDependency = Annotated[
+    AsyncSession,
+    Depends(get_db_session),
+]
+
+
+async def get_tenant_context(
+    current_user: CurrentUserDependency,
+    session: DatabaseSessionDependency,
+    organization_id: Annotated[
+        UUID,
+        Header(
+            alias="X-Organization-ID",
+            description="Organization selected in the Agentic HMS portal.",
+        ),
+    ],
+    property_id: Annotated[
+        UUID | None,
+        Header(
+            alias="X-Property-ID",
+            description="Optional hotel property selected in the portal.",
+        ),
+    ] = None,
+) -> TenantContext:
+    """
+    Verify the organization and optional property selected by the user.
+
+    Header values are treated as requested values only. The tenancy service
+    verifies the resources and memberships before returning TenantContext.
+    """
+
+    try:
+        return await resolve_tenant_context(
+            session,
+            current_user=current_user,
+            organization_id=organization_id,
+            property_id=property_id,
+        )
+
+    except TenantResourceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The requested tenant was not found.",
+        ) from exc
+
+    except TenantAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to the requested tenant.",
+        ) from exc
+
+
+TenantContextDependency = Annotated[
+    TenantContext,
+    Depends(get_tenant_context),
 ]
 
 ================================================
@@ -857,6 +945,7 @@ from app.core.database import close_database_connections
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.modules.identity.routes import router as identity_router
+from app.modules.onboarding.routes import router as onboarding_router
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -876,11 +965,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(
-    health_router,
+app.add_middleware(
+    RequestContextMiddleware,
 )
-
-app.add_middleware(RequestContextMiddleware)
 
 app.include_router(
     health_router,
@@ -888,6 +975,11 @@ app.include_router(
 
 app.include_router(
     identity_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    onboarding_router,
     prefix=settings.api_v1_prefix,
 )
 
@@ -1005,9 +1097,725 @@ def create_current_user(
     )
 
 ================================================
+FILE: hotel-agent-backend/app/modules/onboarding/__init__.py
+================================================
+
+
+================================================
+FILE: hotel-agent-backend/app/modules/onboarding/routes.py
+================================================
+from fastapi import APIRouter, HTTPException, status
+
+from app.api.dependencies import (
+    CurrentUserDependency,
+    DatabaseSessionDependency,
+)
+from app.modules.onboarding.schemas import (
+    OnboardingStatusResponse,
+    OrganizationCreateRequest,
+    OrganizationCreateResponse,
+    PropertyCreateRequest,
+    PropertyCreateResponse,
+)
+from app.modules.onboarding.service import (
+    OnboardingAccessDeniedError,
+    OnboardingConflictError,
+    create_first_organization,
+    create_first_property,
+    get_onboarding_status,
+)
+
+router = APIRouter(
+    prefix="/onboarding",
+    tags=["Onboarding"],
+)
+
+
+@router.get(
+    "/status",
+    response_model=OnboardingStatusResponse,
+)
+async def read_onboarding_status(
+    current_user: CurrentUserDependency,
+    session: DatabaseSessionDependency,
+) -> OnboardingStatusResponse:
+    """Return the next onboarding step for the authenticated user."""
+
+    return await get_onboarding_status(
+        session,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/organization",
+    response_model=OrganizationCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_onboarding_organization(
+    payload: OrganizationCreateRequest,
+    current_user: CurrentUserDependency,
+    session: DatabaseSessionDependency,
+) -> OrganizationCreateResponse:
+    """Create the user's first organization and owner membership."""
+
+    try:
+        organization = await create_first_organization(
+            session,
+            current_user=current_user,
+            payload=payload,
+        )
+
+    except OnboardingConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    return OrganizationCreateResponse.model_validate(
+        organization,
+    )
+
+
+@router.post(
+    "/property",
+    response_model=PropertyCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_onboarding_property(
+    payload: PropertyCreateRequest,
+    current_user: CurrentUserDependency,
+    session: DatabaseSessionDependency,
+) -> PropertyCreateResponse:
+    """Create the first property under the user's owned organization."""
+
+    try:
+        property_ = await create_first_property(
+            session,
+            current_user=current_user,
+            payload=payload,
+        )
+
+    except OnboardingAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+
+    except OnboardingConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    return PropertyCreateResponse.model_validate(
+        property_,
+    )
+
+================================================
+FILE: hotel-agent-backend/app/modules/onboarding/schemas.py
+================================================
+from __future__ import annotations
+
+from enum import StrEnum
+from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+)
+
+
+class OnboardingStep(StrEnum):
+    CREATE_ORGANIZATION = "create_organization"
+    CREATE_PROPERTY = "create_property"
+    COMPLETED = "completed"
+
+
+class OnboardingStatusResponse(BaseModel):
+    """Current onboarding state for the authenticated platform user."""
+
+    has_organization: bool
+    has_property: bool
+    next_step: OnboardingStep
+
+    organization_id: UUID | None = None
+    property_id: UUID | None = None
+
+
+class OrganizationCreateRequest(BaseModel):
+    """Details required to create the user's first hotel organization."""
+
+    name: str = Field(
+        min_length=2,
+        max_length=255,
+    )
+
+    @field_validator(
+        "name",
+        mode="before",
+    )
+    @classmethod
+    def normalize_name(
+        cls,
+        value: object,
+    ) -> str:
+        """
+        Trim external whitespace and collapse repeated internal whitespace.
+
+        This validator runs before Pydantic's length checks so values such as
+        '  Demo   Hotels  ' are validated after normalization.
+        """
+
+        if not isinstance(value, str):
+            raise ValueError(
+                "Organization name must be a string.",
+            )
+
+        normalized = " ".join(
+            value.strip().split(),
+        )
+
+        if not normalized:
+            raise ValueError(
+                "Organization name cannot be blank.",
+            )
+
+        return normalized
+
+
+class OrganizationCreateResponse(BaseModel):
+    """Organization created during initial onboarding."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
+
+    id: UUID
+    name: str
+    slug: str
+
+
+class PropertyCreateRequest(BaseModel):
+    """Details required to create the user's first hotel property."""
+
+    name: str = Field(
+        min_length=2,
+        max_length=255,
+    )
+    code: str = Field(
+        min_length=2,
+        max_length=64,
+    )
+    timezone: str = Field(
+        min_length=1,
+        max_length=64,
+    )
+    currency: str = Field(
+        min_length=3,
+        max_length=3,
+    )
+
+    @field_validator(
+        "name",
+        mode="before",
+    )
+    @classmethod
+    def normalize_property_name(
+        cls,
+        value: object,
+    ) -> str:
+        """Normalize the property name before validating its length."""
+
+        if not isinstance(value, str):
+            raise ValueError(
+                "Property name must be a string.",
+            )
+
+        normalized = " ".join(
+            value.strip().split(),
+        )
+
+        if not normalized:
+            raise ValueError(
+                "Property name cannot be blank.",
+            )
+
+        return normalized
+
+    @field_validator(
+        "code",
+        mode="before",
+    )
+    @classmethod
+    def normalize_property_code(
+        cls,
+        value: object,
+    ) -> str:
+        """Trim and uppercase the property code before length validation."""
+
+        if not isinstance(value, str):
+            raise ValueError(
+                "Property code must be a string.",
+            )
+
+        normalized = value.strip().upper()
+
+        if not normalized:
+            raise ValueError(
+                "Property code cannot be blank.",
+            )
+
+        return normalized
+
+    @field_validator(
+        "currency",
+        mode="before",
+    )
+    @classmethod
+    def normalize_currency(
+        cls,
+        value: object,
+    ) -> str:
+        """
+        Trim and uppercase the ISO-style currency code before validation.
+
+        The database currently requires three uppercase characters. A complete
+        ISO 4217 catalogue validation can be added later if actually needed.
+        """
+
+        if not isinstance(value, str):
+            raise ValueError(
+                "Currency must be a string.",
+            )
+
+        normalized = value.strip().upper()
+
+        if len(normalized) != 3 or not normalized.isalpha():
+            raise ValueError(
+                "Currency must contain exactly three letters.",
+            )
+
+        return normalized
+
+    @field_validator(
+        "timezone",
+        mode="before",
+    )
+    @classmethod
+    def validate_timezone(
+        cls,
+        value: object,
+    ) -> str:
+        """Normalize and validate an IANA timezone name."""
+
+        if not isinstance(value, str):
+            raise ValueError(
+                "Timezone must be a string.",
+            )
+
+        normalized = value.strip()
+
+        if not normalized:
+            raise ValueError(
+                "Timezone cannot be blank.",
+            )
+
+        try:
+            ZoneInfo(normalized)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(
+                "Timezone must be a valid IANA timezone.",
+            ) from exc
+
+        return normalized
+
+
+class PropertyCreateResponse(BaseModel):
+    """Property created during initial onboarding."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
+
+    id: UUID
+    organization_id: UUID
+    name: str
+    code: str
+    timezone: str
+    currency: str
+
+================================================
+FILE: hotel-agent-backend/app/modules/onboarding/service.py
+================================================
+import re
+
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.identity.schemas import CurrentUser
+from app.modules.onboarding.schemas import (
+    OnboardingStatusResponse,
+    OnboardingStep,
+    OrganizationCreateRequest,
+    PropertyCreateRequest,
+)
+from app.modules.tenancy.enums import (
+    LifecycleStatus,
+    OrganizationRole,
+)
+from app.modules.tenancy.models import (
+    Organization,
+    OrganizationMembership,
+    Property,
+)
+
+
+class OnboardingError(Exception):
+    """Base error for onboarding failures."""
+
+
+class OnboardingConflictError(OnboardingError):
+    """Raised when onboarding would duplicate an existing resource."""
+
+
+class OnboardingAccessDeniedError(OnboardingError):
+    """Raised when the user cannot perform the requested onboarding step."""
+
+
+def slugify(
+    value: str,
+) -> str:
+    """Convert an organization name into a URL-friendly slug."""
+
+    normalized = value.strip().lower()
+
+    normalized = re.sub(
+        r"[^a-z0-9]+",
+        "-",
+        normalized,
+    )
+
+    return normalized.strip("-") or "organization"
+
+
+async def generate_unique_organization_slug(
+    session: AsyncSession,
+    *,
+    organization_name: str,
+) -> str:
+    """Generate a slug that is unique across organizations."""
+
+    base_slug = slugify(
+        organization_name,
+    )
+    candidate = base_slug
+    suffix = 2
+
+    while await session.scalar(
+        select(Organization.id).where(
+            Organization.slug == candidate,
+        )
+    ):
+        candidate = f"{base_slug}-{suffix}"
+        suffix += 1
+
+    return candidate
+
+
+async def get_onboarding_status(
+    session: AsyncSession,
+    *,
+    current_user: CurrentUser,
+) -> OnboardingStatusResponse:
+    """Determine the user's onboarding state from existing tenant data."""
+
+    organization_membership = await session.execute(
+        select(
+            OrganizationMembership.organization_id,
+        )
+        .where(
+            OrganizationMembership.user_id == current_user.id,
+            OrganizationMembership.status == LifecycleStatus.ACTIVE,
+        )
+        .order_by(
+            OrganizationMembership.created_at.asc(),
+        )
+        .limit(1)
+    )
+
+    organization_id = organization_membership.scalar_one_or_none()
+
+    if organization_id is None:
+        return OnboardingStatusResponse(
+            has_organization=False,
+            has_property=False,
+            next_step=OnboardingStep.CREATE_ORGANIZATION,
+        )
+
+    property_id = await session.scalar(
+        select(Property.id)
+        .where(
+            Property.organization_id == organization_id,
+            Property.status == LifecycleStatus.ACTIVE,
+        )
+        .order_by(
+            Property.created_at.asc(),
+        )
+        .limit(1)
+    )
+
+    if property_id is None:
+        return OnboardingStatusResponse(
+            has_organization=True,
+            has_property=False,
+            next_step=OnboardingStep.CREATE_PROPERTY,
+            organization_id=organization_id,
+        )
+
+    return OnboardingStatusResponse(
+        has_organization=True,
+        has_property=True,
+        next_step=OnboardingStep.COMPLETED,
+        organization_id=organization_id,
+        property_id=property_id,
+    )
+
+
+async def create_first_organization(
+    session: AsyncSession,
+    *,
+    current_user: CurrentUser,
+    payload: OrganizationCreateRequest,
+) -> Organization:
+    """
+    Create the user's first organization and owner membership atomically.
+
+    The authenticated user automatically becomes organization_owner.
+    """
+
+    existing_membership = await session.scalar(
+        select(OrganizationMembership.id).where(
+            OrganizationMembership.user_id == current_user.id,
+            OrganizationMembership.status == LifecycleStatus.ACTIVE,
+        )
+    )
+
+    if existing_membership is not None:
+        raise OnboardingConflictError(
+            "The user already belongs to an organization.",
+        )
+
+    slug = await generate_unique_organization_slug(
+        session,
+        organization_name=payload.name,
+    )
+
+    organization = Organization(
+        name=payload.name,
+        slug=slug,
+    )
+
+    try:
+        session.add(
+            organization,
+        )
+        await session.flush()
+
+        owner_membership = OrganizationMembership(
+            organization_id=organization.id,
+            user_id=current_user.id,
+            role=OrganizationRole.ORGANIZATION_OWNER,
+            created_by=current_user.id,
+        )
+
+        session.add(
+            owner_membership,
+        )
+
+        await session.commit()
+        await session.refresh(
+            organization,
+        )
+
+    except IntegrityError as exc:
+        await session.rollback()
+
+        raise OnboardingConflictError(
+            "The organization could not be created because of a conflicting record.",
+        ) from exc
+
+    except Exception:
+        await session.rollback()
+        raise
+
+    return organization
+
+
+async def create_first_property(
+    session: AsyncSession,
+    *,
+    current_user: CurrentUser,
+    payload: PropertyCreateRequest,
+) -> Property:
+    """
+    Create the first property under the user's owned organization.
+
+    The organization ID and created_by value are derived from the authenticated
+    user's active organization-owner membership.
+    """
+
+    organization_id = await session.scalar(
+        select(
+            OrganizationMembership.organization_id,
+        ).where(
+            OrganizationMembership.user_id == current_user.id,
+            OrganizationMembership.role == OrganizationRole.ORGANIZATION_OWNER,
+            OrganizationMembership.status == LifecycleStatus.ACTIVE,
+        )
+    )
+
+    if organization_id is None:
+        raise OnboardingAccessDeniedError(
+            "An active organization-owner membership is required.",
+        )
+
+    existing_property_count = await session.scalar(
+        select(
+            func.count(Property.id),
+        ).where(
+            Property.organization_id == organization_id,
+        )
+    )
+
+    if existing_property_count and existing_property_count > 0:
+        raise OnboardingConflictError(
+            "The organization already has a property.",
+        )
+
+    property_ = Property(
+        organization_id=organization_id,
+        name=payload.name,
+        code=payload.code,
+        timezone=payload.timezone,
+        currency=payload.currency,
+        created_by=current_user.id,
+    )
+
+    try:
+        session.add(
+            property_,
+        )
+
+        await session.commit()
+        await session.refresh(
+            property_,
+        )
+
+    except IntegrityError as exc:
+        await session.rollback()
+
+        raise OnboardingConflictError(
+            "The property code is already used by this organization.",
+        ) from exc
+
+    except Exception:
+        await session.rollback()
+        raise
+
+    return property_
+
+================================================
 FILE: hotel-agent-backend/app/modules/tenancy/__init__.py
 ================================================
 
+
+================================================
+FILE: hotel-agent-backend/app/modules/tenancy/context.py
+================================================
+from __future__ import annotations
+
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from app.modules.tenancy.enums import (
+    OrganizationRole,
+    PropertyRole,
+)
+
+
+class TenantContext(BaseModel):
+    """
+    Verified organization and property scope for an authenticated request.
+
+    This object must be created only after the backend has checked:
+    - the organization exists and is active;
+    - the property exists and belongs to the organization;
+    - the authenticated user has an active organization or property membership.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+    )
+
+    user_id: UUID
+    organization_id: UUID
+    property_id: UUID | None = None
+
+    organization_role: OrganizationRole | None = None
+    property_role: PropertyRole | None = None
+
+    @model_validator(mode="after")
+    def validate_tenant_context(self) -> TenantContext:
+        """
+        Prevent invalid tenant-context combinations.
+
+        A property role cannot exist unless a property is selected, and at
+        least one verified membership role must be present.
+        """
+
+        if self.property_id is None and self.property_role is not None:
+            raise ValueError(
+                "property_role cannot be provided without property_id.",
+            )
+
+        if self.organization_role is None and self.property_role is None:
+            raise ValueError(
+                "Tenant context requires at least one verified membership role.",
+            )
+
+        return self
+
+    @property
+    def is_organization_scope(self) -> bool:
+        """Return True when the request operates only at organization level."""
+
+        return self.property_id is None
+
+    @property
+    def is_property_scope(self) -> bool:
+        """Return True when the request operates on a specific hotel property."""
+
+        return self.property_id is not None
+
+    @property
+    def role_names(self) -> frozenset[str]:
+        """Return all verified organization and property role names."""
+
+        roles: set[str] = set()
+
+        if self.organization_role is not None:
+            roles.add(self.organization_role.value)
+
+        if self.property_role is not None:
+            roles.add(self.property_role.value)
+
+        return frozenset(roles)
 
 ================================================
 FILE: hotel-agent-backend/app/modules/tenancy/enums.py
@@ -1363,6 +2171,197 @@ class PropertyMembership(Base):
     property: Mapped[Property] = relationship(back_populates="memberships")
 
 ================================================
+FILE: hotel-agent-backend/app/modules/tenancy/service.py
+================================================
+from uuid import UUID
+
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.identity.schemas import CurrentUser
+from app.modules.tenancy.context import TenantContext
+from app.modules.tenancy.enums import (
+    LifecycleStatus,
+    OrganizationRole,
+    PropertyRole,
+)
+from app.modules.tenancy.models import (
+    Organization,
+    OrganizationMembership,
+    Property,
+    PropertyMembership,
+)
+
+
+class TenantContextResolutionError(Exception):
+    """Base error for tenant-context resolution failures."""
+
+
+class TenantResourceNotFoundError(TenantContextResolutionError):
+    """Raised when an active organization or property cannot be found."""
+
+
+class TenantAccessDeniedError(TenantContextResolutionError):
+    """Raised when the user has no active membership for the requested scope."""
+
+
+async def resolve_tenant_context(
+    session: AsyncSession,
+    *,
+    current_user: CurrentUser,
+    organization_id: UUID,
+    property_id: UUID | None = None,
+) -> TenantContext:
+    """
+    Resolve a verified organization/property context for an authenticated user.
+
+    The client may request an organization and property, but this function
+    verifies that:
+
+    - the organization exists and is active;
+    - the property exists, is active, and belongs to the organization;
+    - the user has an active organization or property membership.
+
+    Organization-scope requests require an organization membership.
+    Property-scope requests allow either an organization membership or a
+    property-specific membership.
+    """
+
+    organization_statement = (
+        select(
+            Organization.id,
+            OrganizationMembership.role,
+        )
+        .outerjoin(
+            OrganizationMembership,
+            and_(
+                OrganizationMembership.organization_id == Organization.id,
+                OrganizationMembership.user_id == current_user.id,
+                OrganizationMembership.status == LifecycleStatus.ACTIVE,
+            ),
+        )
+        .where(
+            Organization.id == organization_id,
+            Organization.status == LifecycleStatus.ACTIVE,
+        )
+    )
+
+    organization_row = (
+        await session.execute(
+            organization_statement,
+        )
+    ).one_or_none()
+
+    if organization_row is None:
+        raise TenantResourceNotFoundError(
+            "The requested organization was not found or is inactive.",
+        )
+
+    organization_role = organization_row[1]
+
+    if property_id is None:
+        if organization_role is None:
+            raise TenantAccessDeniedError(
+                "The user does not have access to this organization.",
+            )
+
+        return TenantContext(
+            user_id=current_user.id,
+            organization_id=organization_id,
+            property_id=None,
+            organization_role=organization_role,
+            property_role=None,
+        )
+
+    property_statement = (
+        select(
+            Property.id,
+            PropertyMembership.role,
+        )
+        .outerjoin(
+            PropertyMembership,
+            and_(
+                PropertyMembership.organization_id == Property.organization_id,
+                PropertyMembership.property_id == Property.id,
+                PropertyMembership.user_id == current_user.id,
+                PropertyMembership.status == LifecycleStatus.ACTIVE,
+            ),
+        )
+        .where(
+            Property.id == property_id,
+            Property.organization_id == organization_id,
+            Property.status == LifecycleStatus.ACTIVE,
+        )
+    )
+
+    property_row = (
+        await session.execute(
+            property_statement,
+        )
+    ).one_or_none()
+
+    if property_row is None:
+        raise TenantResourceNotFoundError(
+            "The requested property was not found, is inactive, "
+            "or does not belong to the organization.",
+        )
+
+    property_role = property_row[1]
+
+    if organization_role is None and property_role is None:
+        raise TenantAccessDeniedError(
+            "The user does not have access to this property.",
+        )
+
+    return TenantContext(
+        user_id=current_user.id,
+        organization_id=organization_id,
+        property_id=property_id,
+        organization_role=organization_role,
+        property_role=property_role,
+    )
+
+
+def require_organization_owner(
+    tenant_context: TenantContext,
+) -> None:
+    """
+    Require organization-owner access.
+
+    This is used for organization-wide operations such as creating properties,
+    managing organization settings, and inviting organization administrators.
+    """
+
+    if tenant_context.organization_role != OrganizationRole.ORGANIZATION_OWNER:
+        raise TenantAccessDeniedError(
+            "Organization owner access is required.",
+        )
+
+
+def require_property_management_access(
+    tenant_context: TenantContext,
+) -> None:
+    """
+    Require permission to manage the selected hotel property.
+
+    Organization owners may manage every property in their organization.
+    Property and operations managers may manage their assigned property.
+    """
+
+    if tenant_context.organization_role == OrganizationRole.ORGANIZATION_OWNER:
+        return
+
+    allowed_property_roles = {
+        PropertyRole.PROPERTY_MANAGER,
+        PropertyRole.OPERATIONS_MANAGER,
+    }
+
+    if tenant_context.property_role not in allowed_property_roles:
+        raise TenantAccessDeniedError(
+            "Property management access is required.",
+        )
+
+================================================
 FILE: hotel-agent-backend/APPLY_AND_VALIDATE.md
 ================================================
 # PR 2 Phase 2A — Apply and validate
@@ -1547,6 +2546,324 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+
+================================================
+FILE: hotel-agent-backend/migrations/versions/a81c4f6b2d90_add_initial_tenant_rls.py
+================================================
+"""add initial tenant rls
+
+Revision ID: a81c4f6b2d90
+Revises: f97cc2fbe621
+Create Date: 2026-07-27
+
+"""
+
+from collections.abc import Sequence
+
+from alembic import op
+
+revision: str = "a81c4f6b2d90"
+down_revision: str | Sequence[str] | None = "f97cc2fbe621"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    """
+    Enable tenant-aware read isolation for Supabase authenticated users.
+
+    Direct writes through Supabase REST are intentionally not allowed yet.
+    All onboarding and administrative writes continue through the FastAPI
+    backend.
+    """
+
+    op.execute(
+        """
+        CREATE SCHEMA IF NOT EXISTS private
+        """
+    )
+
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION private.can_access_organization(
+            target_organization_id uuid
+        )
+        RETURNS boolean
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
+            SELECT
+                EXISTS (
+                    SELECT 1
+                    FROM public.organization_memberships AS membership
+                    WHERE membership.organization_id = target_organization_id
+                      AND membership.user_id = (SELECT auth.uid())
+                      AND membership.status = 'active'
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM public.property_memberships AS membership
+                    WHERE membership.organization_id = target_organization_id
+                      AND membership.user_id = (SELECT auth.uid())
+                      AND membership.status = 'active'
+                );
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION private.can_access_property(
+            target_organization_id uuid,
+            target_property_id uuid
+        )
+        RETURNS boolean
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
+            SELECT
+                EXISTS (
+                    SELECT 1
+                    FROM public.organization_memberships AS membership
+                    WHERE membership.organization_id = target_organization_id
+                      AND membership.user_id = (SELECT auth.uid())
+                      AND membership.status = 'active'
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM public.property_memberships AS membership
+                    WHERE membership.organization_id = target_organization_id
+                      AND membership.property_id = target_property_id
+                      AND membership.user_id = (SELECT auth.uid())
+                      AND membership.status = 'active'
+                );
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION private.is_organization_owner(
+            target_organization_id uuid
+        )
+        RETURNS boolean
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.organization_memberships AS membership
+                WHERE membership.organization_id = target_organization_id
+                  AND membership.user_id = (SELECT auth.uid())
+                  AND membership.role = 'organization_owner'
+                  AND membership.status = 'active'
+            );
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        REVOKE ALL
+        ON FUNCTION private.can_access_organization(uuid)
+        FROM PUBLIC
+        """
+    )
+
+    op.execute(
+        """
+        REVOKE ALL
+        ON FUNCTION private.can_access_property(uuid, uuid)
+        FROM PUBLIC
+        """
+    )
+
+    op.execute(
+        """
+        REVOKE ALL
+        ON FUNCTION private.is_organization_owner(uuid)
+        FROM PUBLIC
+        """
+    )
+
+    op.execute(
+        """
+        GRANT USAGE ON SCHEMA private TO authenticated
+        """
+    )
+
+    op.execute(
+        """
+        GRANT EXECUTE
+        ON FUNCTION private.can_access_organization(uuid)
+        TO authenticated
+        """
+    )
+
+    op.execute(
+        """
+        GRANT EXECUTE
+        ON FUNCTION private.can_access_property(uuid, uuid)
+        TO authenticated
+        """
+    )
+
+    op.execute(
+        """
+        GRANT EXECUTE
+        ON FUNCTION private.is_organization_owner(uuid)
+        TO authenticated
+        """
+    )
+
+    op.execute(
+        """
+        GRANT SELECT ON
+            public.organizations,
+            public.properties,
+            public.organization_memberships,
+            public.property_memberships
+        TO authenticated
+        """
+    )
+
+    op.execute("ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE public.properties ENABLE ROW LEVEL SECURITY")
+    op.execute(
+        "ALTER TABLE public.organization_memberships ENABLE ROW LEVEL SECURITY"
+    )
+    op.execute(
+        "ALTER TABLE public.property_memberships ENABLE ROW LEVEL SECURITY"
+    )
+
+    op.execute(
+        """
+        CREATE POLICY organizations_select_for_members
+        ON public.organizations
+        FOR SELECT
+        TO authenticated
+        USING (
+            private.can_access_organization(id)
+        )
+        """
+    )
+
+    op.execute(
+        """
+        CREATE POLICY properties_select_for_members
+        ON public.properties
+        FOR SELECT
+        TO authenticated
+        USING (
+            private.can_access_property(
+                organization_id,
+                id
+            )
+        )
+        """
+    )
+
+    op.execute(
+        """
+        CREATE POLICY organization_memberships_select
+        ON public.organization_memberships
+        FOR SELECT
+        TO authenticated
+        USING (
+            user_id = (SELECT auth.uid())
+            OR private.is_organization_owner(organization_id)
+        )
+        """
+    )
+
+    op.execute(
+        """
+        CREATE POLICY property_memberships_select
+        ON public.property_memberships
+        FOR SELECT
+        TO authenticated
+        USING (
+            user_id = (SELECT auth.uid())
+            OR private.is_organization_owner(organization_id)
+        )
+        """
+    )
+
+
+def downgrade() -> None:
+    """Remove the initial tenant RLS configuration."""
+
+    op.execute(
+        """
+        DROP POLICY IF EXISTS property_memberships_select
+        ON public.property_memberships
+        """
+    )
+
+    op.execute(
+        """
+        DROP POLICY IF EXISTS organization_memberships_select
+        ON public.organization_memberships
+        """
+    )
+
+    op.execute(
+        """
+        DROP POLICY IF EXISTS properties_select_for_members
+        ON public.properties
+        """
+    )
+
+    op.execute(
+        """
+        DROP POLICY IF EXISTS organizations_select_for_members
+        ON public.organizations
+        """
+    )
+
+    op.execute(
+        "ALTER TABLE public.property_memberships DISABLE ROW LEVEL SECURITY"
+    )
+    op.execute(
+        "ALTER TABLE public.organization_memberships DISABLE ROW LEVEL SECURITY"
+    )
+    op.execute("ALTER TABLE public.properties DISABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE public.organizations DISABLE ROW LEVEL SECURITY")
+
+    op.execute(
+        """
+        REVOKE SELECT ON
+            public.organizations,
+            public.properties,
+            public.organization_memberships,
+            public.property_memberships
+        FROM authenticated
+        """
+    )
+
+    op.execute(
+        """
+        DROP FUNCTION IF EXISTS private.is_organization_owner(uuid)
+        """
+    )
+
+    op.execute(
+        """
+        DROP FUNCTION IF EXISTS private.can_access_property(uuid, uuid)
+        """
+    )
+
+    op.execute(
+        """
+        DROP FUNCTION IF EXISTS private.can_access_organization(uuid)
+        """
+    )
 
 ================================================
 FILE: hotel-agent-backend/migrations/versions/cdff641a8945_initialize_backend_foundation.py
@@ -1844,6 +3161,7 @@ dependencies = [
     "alembic",
     "structlog",
     "pyjwt[crypto]>=2.10,<3",
+    "tzdata",
 ]
 
 [project.optional-dependencies]
@@ -1920,15 +3238,20 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-# Unit tests should still load even when no local .env exists,
-# such as inside GitHub Actions.
+# Unit tests must be able to import the application even when no local
+# .env file exists, such as inside GitHub Actions.
+#
+# This URL is only used during unit-test application startup. Unit tests
+# mock database calls and do not connect to this database.
 if "DATABASE_URL" not in os.environ and not Path(".env").exists():
-    os.environ["DATABASE_URL"] = "postgresql://postgres:postgres@localhost:5432/postgres"
+    os.environ["DATABASE_URL"] = (
+        "postgresql://postgres:postgres@localhost:5432/postgres"
+    )
 
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
-    """Provide a FastAPI test client to unit tests."""
+    """Provide a FastAPI test client to all unit tests."""
 
     from app.main import app
 
@@ -1948,15 +3271,25 @@ from app.core.database import engine
 
 @pytest.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
-    """Provide an isolated database transaction for each integration test."""
+    """
+    Provide an isolated database session for each integration test.
+
+    Application services may call session.commit(). The session therefore
+    uses a savepoint so those service commits do not commit the fixture's
+    outer transaction.
+
+    At the end of every test, rolling back the outer transaction removes
+    everything created by that test.
+    """
 
     async with engine.connect() as connection:
-        transaction = await connection.begin()
+        outer_transaction = await connection.begin()
 
         session = AsyncSession(
             bind=connection,
             expire_on_commit=False,
             autoflush=False,
+            join_transaction_mode="create_savepoint",
         )
 
         try:
@@ -1964,8 +3297,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
 
-            if transaction.is_active:
-                await transaction.rollback()
+            if outer_transaction.is_active:
+                await outer_transaction.rollback()
 
 ================================================
 FILE: hotel-agent-backend/tests/integration/test_database_health.py
@@ -1987,6 +3320,259 @@ async def test_real_supabase_database_connection() -> None:
     connected = await check_database_connection()
 
     assert connected is True
+
+================================================
+FILE: hotel-agent-backend/tests/integration/test_onboarding_service.py
+================================================
+import os
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.identity.schemas import CurrentUser
+from app.modules.onboarding.schemas import (
+    OnboardingStep,
+    OrganizationCreateRequest,
+    PropertyCreateRequest,
+)
+from app.modules.onboarding.service import (
+    OnboardingAccessDeniedError,
+    OnboardingConflictError,
+    create_first_organization,
+    create_first_property,
+    get_onboarding_status,
+)
+from app.modules.tenancy.enums import (
+    LifecycleStatus,
+    OrganizationRole,
+)
+from app.modules.tenancy.models import (
+    Organization,
+    OrganizationMembership,
+)
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("RUN_INTEGRATION_TESTS") != "1",
+        reason="Set RUN_INTEGRATION_TESTS=1 to run Supabase integration tests.",
+    ),
+]
+
+
+def create_test_user() -> CurrentUser:
+    return CurrentUser(
+        id=uuid4(),
+        email="integration-user@example.com",
+        auth_role="authenticated",
+    )
+
+
+def create_organization_payload() -> OrganizationCreateRequest:
+    return OrganizationCreateRequest(
+        name=f"Integration Hotels {uuid4().hex[:8]}",
+    )
+
+
+def create_property_payload(
+    *,
+    code: str | None = None,
+) -> PropertyCreateRequest:
+    return PropertyCreateRequest(
+        name="Integration Hotel Delhi",
+        code=code or f"DEL-{uuid4().hex[:8]}",
+        timezone="Asia/Kolkata",
+        currency="INR",
+    )
+
+
+async def test_new_user_must_create_organization(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    onboarding_status = await get_onboarding_status(
+        db_session,
+        current_user=current_user,
+    )
+
+    assert onboarding_status.has_organization is False
+    assert onboarding_status.has_property is False
+    assert onboarding_status.next_step == OnboardingStep.CREATE_ORGANIZATION
+    assert onboarding_status.organization_id is None
+    assert onboarding_status.property_id is None
+
+
+async def test_creating_organization_also_creates_owner_membership(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    organization = await create_first_organization(
+        db_session,
+        current_user=current_user,
+        payload=create_organization_payload(),
+    )
+
+    membership = await db_session.scalar(
+        select(OrganizationMembership).where(
+            OrganizationMembership.organization_id == organization.id,
+            OrganizationMembership.user_id == current_user.id,
+        )
+    )
+
+    assert membership is not None
+    assert membership.organization_id == organization.id
+    assert membership.user_id == current_user.id
+    assert membership.role == OrganizationRole.ORGANIZATION_OWNER
+    assert membership.status == LifecycleStatus.ACTIVE
+    assert membership.created_by == current_user.id
+
+
+async def test_organization_owner_must_create_property_next(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    organization = await create_first_organization(
+        db_session,
+        current_user=current_user,
+        payload=create_organization_payload(),
+    )
+
+    onboarding_status = await get_onboarding_status(
+        db_session,
+        current_user=current_user,
+    )
+
+    assert onboarding_status.has_organization is True
+    assert onboarding_status.has_property is False
+    assert onboarding_status.next_step == OnboardingStep.CREATE_PROPERTY
+    assert onboarding_status.organization_id == organization.id
+    assert onboarding_status.property_id is None
+
+
+async def test_creating_first_property_completes_onboarding(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    organization = await create_first_organization(
+        db_session,
+        current_user=current_user,
+        payload=create_organization_payload(),
+    )
+
+    property_ = await create_first_property(
+        db_session,
+        current_user=current_user,
+        payload=create_property_payload(),
+    )
+
+    onboarding_status = await get_onboarding_status(
+        db_session,
+        current_user=current_user,
+    )
+
+    assert property_.organization_id == organization.id
+    assert property_.created_by == current_user.id
+
+    assert onboarding_status.has_organization is True
+    assert onboarding_status.has_property is True
+    assert onboarding_status.next_step == OnboardingStep.COMPLETED
+    assert onboarding_status.organization_id == organization.id
+    assert onboarding_status.property_id == property_.id
+
+
+async def test_user_cannot_create_second_initial_organization(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    await create_first_organization(
+        db_session,
+        current_user=current_user,
+        payload=create_organization_payload(),
+    )
+
+    with pytest.raises(
+        OnboardingConflictError,
+        match="already belongs to an organization",
+    ):
+        await create_first_organization(
+            db_session,
+            current_user=current_user,
+            payload=create_organization_payload(),
+        )
+
+
+async def test_non_owner_cannot_create_initial_property(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    organization = Organization(
+        name="Viewer Organization",
+        slug=f"viewer-{uuid4().hex}",
+    )
+
+    db_session.add(
+        organization,
+    )
+    await db_session.flush()
+
+    membership = OrganizationMembership(
+        organization_id=organization.id,
+        user_id=current_user.id,
+        role=OrganizationRole.VIEWER,
+        status=LifecycleStatus.ACTIVE,
+        created_by=current_user.id,
+    )
+
+    db_session.add(
+        membership,
+    )
+    await db_session.flush()
+
+    with pytest.raises(
+        OnboardingAccessDeniedError,
+        match="organization-owner membership is required",
+    ):
+        await create_first_property(
+            db_session,
+            current_user=current_user,
+            payload=create_property_payload(),
+        )
+
+
+async def test_organization_cannot_create_second_initial_property(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    await create_first_organization(
+        db_session,
+        current_user=current_user,
+        payload=create_organization_payload(),
+    )
+
+    await create_first_property(
+        db_session,
+        current_user=current_user,
+        payload=create_property_payload(),
+    )
+
+    with pytest.raises(
+        OnboardingConflictError,
+        match="already has a property",
+    ):
+        await create_first_property(
+            db_session,
+            current_user=current_user,
+            payload=create_property_payload(),
+        )
 
 ================================================
 FILE: hotel-agent-backend/tests/integration/test_tenancy_models.py
@@ -2366,6 +3952,365 @@ async def test_deleting_organization_cascades_dependent_records(
     assert property_membership_count == 0
 
 ================================================
+FILE: hotel-agent-backend/tests/integration/test_tenant_context.py
+================================================
+import os
+from uuid import UUID, uuid4
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.identity.schemas import CurrentUser
+from app.modules.tenancy.enums import (
+    LifecycleStatus,
+    OrganizationRole,
+    PropertyRole,
+)
+from app.modules.tenancy.models import (
+    Organization,
+    OrganizationMembership,
+    Property,
+    PropertyMembership,
+)
+from app.modules.tenancy.service import (
+    TenantAccessDeniedError,
+    TenantResourceNotFoundError,
+    resolve_tenant_context,
+)
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("RUN_INTEGRATION_TESTS") != "1",
+        reason="Set RUN_INTEGRATION_TESTS=1 to run Supabase integration tests.",
+    ),
+]
+
+
+def create_test_user() -> CurrentUser:
+    return CurrentUser(
+        id=uuid4(),
+        email="tenant-user@example.com",
+        auth_role="authenticated",
+    )
+
+
+async def create_organization(
+    session: AsyncSession,
+    *,
+    status: LifecycleStatus = LifecycleStatus.ACTIVE,
+) -> Organization:
+    organization = Organization(
+        name="Tenant Test Organization",
+        slug=f"tenant-{uuid4().hex}",
+        status=status,
+    )
+
+    session.add(
+        organization,
+    )
+    await session.flush()
+
+    return organization
+
+
+async def create_property(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    status: LifecycleStatus = LifecycleStatus.ACTIVE,
+) -> Property:
+    property_ = Property(
+        organization_id=organization_id,
+        name="Tenant Test Property",
+        code=f"PROP-{uuid4().hex[:8]}",
+        timezone="Asia/Kolkata",
+        currency="INR",
+        status=status,
+        created_by=uuid4(),
+    )
+
+    session.add(
+        property_,
+    )
+    await session.flush()
+
+    return property_
+
+
+async def create_organization_membership(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    user_id: UUID,
+    role: OrganizationRole = OrganizationRole.ORGANIZATION_OWNER,
+    status: LifecycleStatus = LifecycleStatus.ACTIVE,
+) -> OrganizationMembership:
+    membership = OrganizationMembership(
+        organization_id=organization_id,
+        user_id=user_id,
+        role=role,
+        status=status,
+        created_by=user_id,
+    )
+
+    session.add(
+        membership,
+    )
+    await session.flush()
+
+    return membership
+
+
+async def create_property_membership(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    property_id: UUID,
+    user_id: UUID,
+    role: PropertyRole = PropertyRole.PROPERTY_MANAGER,
+    status: LifecycleStatus = LifecycleStatus.ACTIVE,
+) -> PropertyMembership:
+    membership = PropertyMembership(
+        organization_id=organization_id,
+        property_id=property_id,
+        user_id=user_id,
+        role=role,
+        status=status,
+        created_by=user_id,
+    )
+
+    session.add(
+        membership,
+    )
+    await session.flush()
+
+    return membership
+
+
+async def test_organization_owner_can_access_organization(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+    organization = await create_organization(db_session)
+
+    await create_organization_membership(
+        db_session,
+        organization_id=organization.id,
+        user_id=current_user.id,
+    )
+
+    tenant_context = await resolve_tenant_context(
+        db_session,
+        current_user=current_user,
+        organization_id=organization.id,
+    )
+
+    assert tenant_context.user_id == current_user.id
+    assert tenant_context.organization_id == organization.id
+    assert tenant_context.property_id is None
+    assert tenant_context.organization_role == OrganizationRole.ORGANIZATION_OWNER
+    assert tenant_context.property_role is None
+
+
+async def test_organization_owner_can_access_property(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+    organization = await create_organization(db_session)
+
+    property_ = await create_property(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    await create_organization_membership(
+        db_session,
+        organization_id=organization.id,
+        user_id=current_user.id,
+    )
+
+    tenant_context = await resolve_tenant_context(
+        db_session,
+        current_user=current_user,
+        organization_id=organization.id,
+        property_id=property_.id,
+    )
+
+    assert tenant_context.organization_id == organization.id
+    assert tenant_context.property_id == property_.id
+    assert tenant_context.organization_role == OrganizationRole.ORGANIZATION_OWNER
+
+
+async def test_property_manager_can_access_assigned_property(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+    organization = await create_organization(db_session)
+
+    property_ = await create_property(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    await create_property_membership(
+        db_session,
+        organization_id=organization.id,
+        property_id=property_.id,
+        user_id=current_user.id,
+    )
+
+    tenant_context = await resolve_tenant_context(
+        db_session,
+        current_user=current_user,
+        organization_id=organization.id,
+        property_id=property_.id,
+    )
+
+    assert tenant_context.organization_role is None
+    assert tenant_context.property_role == PropertyRole.PROPERTY_MANAGER
+    assert tenant_context.property_id == property_.id
+
+
+async def test_property_manager_cannot_access_another_property(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+    organization = await create_organization(db_session)
+
+    assigned_property = await create_property(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    other_property = await create_property(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    await create_property_membership(
+        db_session,
+        organization_id=organization.id,
+        property_id=assigned_property.id,
+        user_id=current_user.id,
+    )
+
+    with pytest.raises(
+        TenantAccessDeniedError,
+        match="does not have access to this property",
+    ):
+        await resolve_tenant_context(
+            db_session,
+            current_user=current_user,
+            organization_id=organization.id,
+            property_id=other_property.id,
+        )
+
+
+async def test_inactive_organization_membership_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+    organization = await create_organization(db_session)
+
+    await create_organization_membership(
+        db_session,
+        organization_id=organization.id,
+        user_id=current_user.id,
+        status=LifecycleStatus.INACTIVE,
+    )
+
+    with pytest.raises(TenantAccessDeniedError):
+        await resolve_tenant_context(
+            db_session,
+            current_user=current_user,
+            organization_id=organization.id,
+        )
+
+
+async def test_inactive_property_membership_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+    organization = await create_organization(db_session)
+
+    property_ = await create_property(
+        db_session,
+        organization_id=organization.id,
+    )
+
+    await create_property_membership(
+        db_session,
+        organization_id=organization.id,
+        property_id=property_.id,
+        user_id=current_user.id,
+        status=LifecycleStatus.INACTIVE,
+    )
+
+    with pytest.raises(TenantAccessDeniedError):
+        await resolve_tenant_context(
+            db_session,
+            current_user=current_user,
+            organization_id=organization.id,
+            property_id=property_.id,
+        )
+
+
+async def test_property_from_another_organization_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    organization_a = await create_organization(db_session)
+    organization_b = await create_organization(db_session)
+
+    property_b = await create_property(
+        db_session,
+        organization_id=organization_b.id,
+    )
+
+    await create_organization_membership(
+        db_session,
+        organization_id=organization_a.id,
+        user_id=current_user.id,
+    )
+
+    with pytest.raises(TenantResourceNotFoundError):
+        await resolve_tenant_context(
+            db_session,
+            current_user=current_user,
+            organization_id=organization_a.id,
+            property_id=property_b.id,
+        )
+
+
+async def test_unknown_organization_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+
+    with pytest.raises(TenantResourceNotFoundError):
+        await resolve_tenant_context(
+            db_session,
+            current_user=current_user,
+            organization_id=uuid4(),
+        )
+
+
+async def test_known_organization_without_membership_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    current_user = create_test_user()
+    organization = await create_organization(db_session)
+
+    with pytest.raises(TenantAccessDeniedError):
+        await resolve_tenant_context(
+            db_session,
+            current_user=current_user,
+            organization_id=organization.id,
+        )
+
+================================================
 FILE: hotel-agent-backend/tests/unit/test_auth_dependencies.py
 ================================================
 from uuid import uuid4
@@ -2621,6 +4566,251 @@ def test_existing_request_id_is_preserved(
     assert response.headers["X-Request-ID"] == request_id
 
 ================================================
+FILE: hotel-agent-backend/tests/unit/test_onboarding_schemas.py
+================================================
+import pytest
+from pydantic import ValidationError
+
+from app.modules.onboarding.schemas import (
+    OrganizationCreateRequest,
+    PropertyCreateRequest,
+)
+
+
+def test_organization_name_is_normalized() -> None:
+    payload = OrganizationCreateRequest(
+        name="   Demo    Hotels   Private   Limited   ",
+    )
+
+    assert payload.name == "Demo Hotels Private Limited"
+
+
+def test_property_fields_are_normalized() -> None:
+    payload = PropertyCreateRequest(
+        name="   Demo    Hotel   Delhi   ",
+        code="  del-01  ",
+        timezone="Asia/Kolkata",
+        currency=" inr ",
+    )
+
+    assert payload.name == "Demo Hotel Delhi"
+    assert payload.code == "DEL-01"
+    assert payload.timezone == "Asia/Kolkata"
+    assert payload.currency == "INR"
+
+
+@pytest.mark.parametrize(
+    "timezone",
+    [
+        "",
+        "Invalid/Timezone",
+        "India/NewDelhi",
+        "Mars/Olympus",
+    ],
+)
+def test_invalid_timezone_is_rejected(
+    timezone: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        PropertyCreateRequest(
+            name="Demo Hotel",
+            code="DEL01",
+            timezone=timezone,
+            currency="INR",
+        )
+
+
+@pytest.mark.parametrize(
+    "currency",
+    [
+        "IN",
+        "INRR",
+        "1NR",
+        "₹₹₹",
+        "",
+    ],
+)
+def test_invalid_currency_is_rejected(
+    currency: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        PropertyCreateRequest(
+            name="Demo Hotel",
+            code="DEL01",
+            timezone="Asia/Kolkata",
+            currency=currency,
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        " ",
+        "A",
+    ],
+)
+def test_invalid_organization_name_is_rejected(
+    name: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        OrganizationCreateRequest(
+            name=name,
+        )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "",
+        " ",
+        "A",
+    ],
+)
+def test_invalid_property_code_is_rejected(
+    code: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        PropertyCreateRequest(
+            name="Demo Hotel",
+            code=code,
+            timezone="Asia/Kolkata",
+            currency="INR",
+        )
+
+================================================
+FILE: hotel-agent-backend/tests/unit/test_tenant_permissions.py
+================================================
+from uuid import uuid4
+
+import pytest
+
+from app.modules.tenancy.context import TenantContext
+from app.modules.tenancy.enums import (
+    OrganizationRole,
+    PropertyRole,
+)
+from app.modules.tenancy.service import (
+    TenantAccessDeniedError,
+    require_organization_owner,
+    require_property_management_access,
+)
+
+
+def create_tenant_context(
+    *,
+    organization_role: OrganizationRole | None = None,
+    property_role: PropertyRole | None = None,
+    property_scope: bool = False,
+) -> TenantContext:
+    return TenantContext(
+        user_id=uuid4(),
+        organization_id=uuid4(),
+        property_id=uuid4() if property_scope else None,
+        organization_role=organization_role,
+        property_role=property_role,
+    )
+
+
+def test_organization_owner_permission_is_allowed() -> None:
+    tenant_context = create_tenant_context(
+        organization_role=OrganizationRole.ORGANIZATION_OWNER,
+    )
+
+    require_organization_owner(
+        tenant_context,
+    )
+
+
+def test_organization_viewer_is_not_an_owner() -> None:
+    tenant_context = create_tenant_context(
+        organization_role=OrganizationRole.VIEWER,
+    )
+
+    with pytest.raises(
+        TenantAccessDeniedError,
+        match="Organization owner access is required",
+    ):
+        require_organization_owner(
+            tenant_context,
+        )
+
+
+def test_property_manager_is_not_an_organization_owner() -> None:
+    tenant_context = create_tenant_context(
+        property_role=PropertyRole.PROPERTY_MANAGER,
+        property_scope=True,
+    )
+
+    with pytest.raises(
+        TenantAccessDeniedError,
+        match="Organization owner access is required",
+    ):
+        require_organization_owner(
+            tenant_context,
+        )
+
+
+def test_organization_owner_can_manage_property() -> None:
+    tenant_context = create_tenant_context(
+        organization_role=OrganizationRole.ORGANIZATION_OWNER,
+        property_scope=True,
+    )
+
+    require_property_management_access(
+        tenant_context,
+    )
+
+
+def test_property_manager_can_manage_property() -> None:
+    tenant_context = create_tenant_context(
+        property_role=PropertyRole.PROPERTY_MANAGER,
+        property_scope=True,
+    )
+
+    require_property_management_access(
+        tenant_context,
+    )
+
+
+def test_operations_manager_can_manage_property() -> None:
+    tenant_context = create_tenant_context(
+        property_role=PropertyRole.OPERATIONS_MANAGER,
+        property_scope=True,
+    )
+
+    require_property_management_access(
+        tenant_context,
+    )
+
+
+@pytest.mark.parametrize(
+    "property_role",
+    [
+        PropertyRole.RESERVATION_MANAGER,
+        PropertyRole.RESTAURANT_MANAGER,
+        PropertyRole.EVENT_MANAGER,
+        PropertyRole.SUPPORT_AGENT,
+        PropertyRole.VIEWER,
+    ],
+)
+def test_other_property_roles_cannot_manage_property(
+    property_role: PropertyRole,
+) -> None:
+    tenant_context = create_tenant_context(
+        property_role=property_role,
+        property_scope=True,
+    )
+
+    with pytest.raises(
+        TenantAccessDeniedError,
+        match="Property management access is required",
+    ):
+        require_property_management_access(
+            tenant_context,
+        )
+
+================================================
 FILE: README.md
 ================================================
 # Agentic-HMS
@@ -2635,6 +4825,7 @@ uvicorn[standard]
 # Configuration and validation
 pydantic
 pydantic-settings
+tzdata
 
 # Database and migrations
 SQLAlchemy

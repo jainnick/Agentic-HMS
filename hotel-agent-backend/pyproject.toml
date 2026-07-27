@@ -17,6 +17,7 @@ dependencies = [
     "alembic",
     "structlog",
     "pyjwt[crypto]>=2.10,<3",
+    "tzdata",
 ]
 
 [project.optional-dependencies]
