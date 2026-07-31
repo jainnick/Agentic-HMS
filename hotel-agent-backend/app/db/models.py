@@ -1,4 +1,8 @@
 from app.db.base import Base
+from app.modules.knowledge.models import (
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
 from app.modules.tenancy.models import (
     Organization,
     OrganizationMembership,
@@ -8,6 +12,8 @@ from app.modules.tenancy.models import (
 
 __all__ = [
     "Base",
+    "KnowledgeChunk",
+    "KnowledgeDocument",
     "Organization",
     "OrganizationMembership",
     "Property",

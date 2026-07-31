@@ -183,12 +183,8 @@ def upgrade() -> None:
 
     op.execute("ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE public.properties ENABLE ROW LEVEL SECURITY")
-    op.execute(
-        "ALTER TABLE public.organization_memberships ENABLE ROW LEVEL SECURITY"
-    )
-    op.execute(
-        "ALTER TABLE public.property_memberships ENABLE ROW LEVEL SECURITY"
-    )
+    op.execute("ALTER TABLE public.organization_memberships ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE public.property_memberships ENABLE ROW LEVEL SECURITY")
 
     op.execute(
         """
@@ -275,12 +271,8 @@ def downgrade() -> None:
         """
     )
 
-    op.execute(
-        "ALTER TABLE public.property_memberships DISABLE ROW LEVEL SECURITY"
-    )
-    op.execute(
-        "ALTER TABLE public.organization_memberships DISABLE ROW LEVEL SECURITY"
-    )
+    op.execute("ALTER TABLE public.property_memberships DISABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE public.organization_memberships DISABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE public.properties DISABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE public.organizations DISABLE ROW LEVEL SECURITY")
 

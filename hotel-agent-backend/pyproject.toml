@@ -18,6 +18,11 @@ dependencies = [
     "structlog",
     "pyjwt[crypto]>=2.10,<3",
     "tzdata",
+    "python-multipart", 
+    "pgvector", 
+    "pymupdf", 
+    "sentence-transformers", 
+    "openai",
 ]
 
 [project.optional-dependencies]
