@@ -11,6 +11,9 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import (
+    KnowledgeDocument,
+)
 from app.modules.knowledge import (
     service as knowledge_service,
 )
@@ -24,13 +27,15 @@ from app.modules.knowledge.enums import (
 from app.modules.knowledge.extraction import (
     PdfTextNotFoundError,
 )
-from app.db.models import (
-    KnowledgeDocument,
+from app.modules.knowledge.repository import (
+    KnowledgeSearchRow,
 )
 from app.modules.knowledge.service import (
     DuplicateKnowledgeDocumentError,
     KnowledgeDocumentCreationConflictError,
+    KnowledgeSearchValidationError,
     ingest_pdf_document,
+    search_property_knowledge,
 )
 
 
@@ -71,6 +76,8 @@ def patch_test_settings(
         knowledge_max_upload_mb=10,
         knowledge_chunk_size=500,
         knowledge_chunk_overlap=75,
+        rag_match_count=6,
+        rag_min_similarity=0.45,
     )
 
     monkeypatch.setattr(
@@ -339,3 +346,287 @@ async def test_processing_document_commit_conflict(
         )
 
     session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_search_property_knowledge_uses_defaults_and_maps_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_test_settings(monkeypatch)
+
+    session = build_mock_session()
+
+    organization_id = uuid4()
+    property_id = uuid4()
+    chunk_id = uuid4()
+    document_id = uuid4()
+
+    query_embedding = [0.01] * 384
+
+    repository_rows = [
+        KnowledgeSearchRow(
+            chunk_id=chunk_id,
+            document_id=document_id,
+            document_title="Guest Policies",
+            source_key="guest-policies",
+            version_number=2,
+            chunk_index=3,
+            content="Checkout time is 11:00 AM.",
+            heading="Check-in and checkout",
+            page_number=4,
+            similarity=0.82,
+        )
+    ]
+
+    embed_query_mock = AsyncMock(return_value=query_embedding)
+
+    search_repository_mock = AsyncMock(return_value=repository_rows)
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "embed_query_async",
+        embed_query_mock,
+    )
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "search_knowledge_chunks",
+        search_repository_mock,
+    )
+
+    matches = await search_property_knowledge(
+        session,
+        organization_id=organization_id,
+        property_id=property_id,
+        query="  What   time is\ncheckout?  ",
+    )
+
+    embed_query_mock.assert_awaited_once_with("What time is checkout?")
+
+    search_repository_mock.assert_awaited_once_with(
+        session,
+        organization_id=organization_id,
+        property_id=property_id,
+        query_embedding=query_embedding,
+        match_count=6,
+        min_similarity=0.45,
+    )
+
+    assert len(matches) == 1
+
+    match = matches[0]
+
+    assert match.chunk_id == chunk_id
+    assert match.document_id == document_id
+    assert match.document_title == "Guest Policies"
+    assert match.source_key == "guest-policies"
+    assert match.version_number == 2
+    assert match.chunk_index == 3
+    assert match.content == "Checkout time is 11:00 AM."
+    assert match.heading == "Check-in and checkout"
+    assert match.page_number == 4
+    assert match.similarity == pytest.approx(0.82)
+
+
+@pytest.mark.asyncio
+async def test_search_property_knowledge_uses_custom_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_test_settings(monkeypatch)
+
+    session = build_mock_session()
+
+    organization_id = uuid4()
+    property_id = uuid4()
+
+    query_embedding = [0.02] * 384
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "embed_query_async",
+        AsyncMock(return_value=query_embedding),
+    )
+
+    search_repository_mock = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "search_knowledge_chunks",
+        search_repository_mock,
+    )
+
+    matches = await search_property_knowledge(
+        session,
+        organization_id=organization_id,
+        property_id=property_id,
+        query="Are pets allowed?",
+        match_count=4,
+        min_similarity=0.60,
+    )
+
+    assert matches == []
+
+    search_repository_mock.assert_awaited_once_with(
+        session,
+        organization_id=organization_id,
+        property_id=property_id,
+        query_embedding=query_embedding,
+        match_count=4,
+        min_similarity=0.60,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",
+        "   ",
+        "\n\t",
+    ],
+)
+async def test_search_property_knowledge_rejects_blank_query(
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+) -> None:
+    patch_test_settings(monkeypatch)
+
+    session = build_mock_session()
+
+    embed_query_mock = AsyncMock()
+    search_repository_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "embed_query_async",
+        embed_query_mock,
+    )
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "search_knowledge_chunks",
+        search_repository_mock,
+    )
+
+    with pytest.raises(
+        KnowledgeSearchValidationError,
+        match="cannot be blank",
+    ):
+        await search_property_knowledge(
+            session,
+            organization_id=uuid4(),
+            property_id=uuid4(),
+            query=query,
+        )
+
+    embed_query_mock.assert_not_awaited()
+    search_repository_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_property_knowledge_rejects_long_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_test_settings(monkeypatch)
+
+    session = build_mock_session()
+
+    embed_query_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "embed_query_async",
+        embed_query_mock,
+    )
+
+    with pytest.raises(
+        KnowledgeSearchValidationError,
+        match="cannot exceed",
+    ):
+        await search_property_knowledge(
+            session,
+            organization_id=uuid4(),
+            property_id=uuid4(),
+            query="a" * 2_001,
+        )
+
+    embed_query_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "match_count",
+    [
+        0,
+        -1,
+        21,
+    ],
+)
+async def test_search_property_knowledge_rejects_invalid_match_count(
+    monkeypatch: pytest.MonkeyPatch,
+    match_count: int,
+) -> None:
+    patch_test_settings(monkeypatch)
+
+    session = build_mock_session()
+
+    embed_query_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "embed_query_async",
+        embed_query_mock,
+    )
+
+    with pytest.raises(
+        KnowledgeSearchValidationError,
+        match="match count",
+    ):
+        await search_property_knowledge(
+            session,
+            organization_id=uuid4(),
+            property_id=uuid4(),
+            query="What time is checkout?",
+            match_count=match_count,
+        )
+
+    embed_query_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "min_similarity",
+    [
+        -0.01,
+        1.01,
+    ],
+)
+async def test_search_property_knowledge_rejects_invalid_similarity(
+    monkeypatch: pytest.MonkeyPatch,
+    min_similarity: float,
+) -> None:
+    patch_test_settings(monkeypatch)
+
+    session = build_mock_session()
+
+    embed_query_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "embed_query_async",
+        embed_query_mock,
+    )
+
+    with pytest.raises(
+        KnowledgeSearchValidationError,
+        match="between 0 and 1",
+    ):
+        await search_property_knowledge(
+            session,
+            organization_id=uuid4(),
+            property_id=uuid4(),
+            query="What time is checkout?",
+            min_similarity=min_similarity,
+        )
+
+    embed_query_mock.assert_not_awaited()

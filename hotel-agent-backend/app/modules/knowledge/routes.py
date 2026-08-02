@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -27,22 +28,58 @@ from app.modules.knowledge.repository import (
 )
 from app.modules.knowledge.schemas import (
     KnowledgePdfUploadResponse,
+    KnowledgeSearchMatchResponse,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
 )
 from app.modules.knowledge.service import (
     DuplicateKnowledgeDocumentError,
     KnowledgeDocumentCreationConflictError,
+    KnowledgeSearchValidationError,
     ingest_pdf_document,
+    search_property_knowledge,
 )
+from app.modules.tenancy.context import TenantContext
 from app.modules.tenancy.service import (
     TenantAccessDeniedError,
     require_property_management_access,
 )
 
-
 router = APIRouter(
-    prefix="/admin/knowledge/documents",
+    prefix="/admin/knowledge",
     tags=["Knowledge Admin"],
 )
+
+
+def require_selected_management_property(
+    tenant_context: TenantContext,
+) -> UUID:
+    """
+    Return the selected property after checking management permission.
+
+    Knowledge documents and knowledge retrieval both operate at property scope.
+    The organization alone is not enough because different hotels inside the
+    same organization may have different policies.
+    """
+
+    property_id = tenant_context.property_id
+
+    if property_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=("A property must be selected using the X-Property-ID header."),
+        )
+
+    try:
+        require_property_management_access(tenant_context)
+
+    except TenantAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+
+    return property_id
 
 
 async def read_limited_upload(
@@ -71,7 +108,7 @@ async def read_limited_upload(
 
 
 @router.post(
-    "/pdf",
+    "/documents/pdf",
     response_model=KnowledgePdfUploadResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -104,22 +141,7 @@ async def upload_pdf_knowledge_document(
     manage knowledge documents for the selected property.
     """
 
-    property_id = tenant_context.property_id
-
-    if property_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=("A property must be selected using the X-Property-ID header."),
-        )
-
-    try:
-        require_property_management_access(tenant_context)
-
-    except TenantAccessDeniedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
-        ) from exc
+    property_id = require_selected_management_property(tenant_context)
 
     settings = get_settings()
 
@@ -185,7 +207,7 @@ async def upload_pdf_knowledge_document(
     except KnowledgeRepositoryError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=("The document could not be stored."),
+            detail="The document could not be stored.",
         ) from exc
 
     document = result.document
@@ -204,4 +226,76 @@ async def upload_pdf_knowledge_document(
         chunk_count=result.chunk_count,
         created_at=document.created_at,
         updated_at=document.updated_at,
+    )
+
+
+@router.post(
+    "/search-test",
+    response_model=KnowledgeSearchResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def search_knowledge_test(
+    request: KnowledgeSearchRequest,
+    tenant_context: TenantContextDependency,
+    session: DatabaseSessionDependency,
+) -> KnowledgeSearchResponse:
+    """
+    Test tenant-filtered vector retrieval for one hotel property.
+
+    This is an administrative diagnostic endpoint. It returns raw matching
+    chunks and does not call an LLM or generate a guest-facing answer.
+    """
+
+    property_id = require_selected_management_property(tenant_context)
+
+    try:
+        matches = await search_property_knowledge(
+            session,
+            organization_id=(tenant_context.organization_id),
+            property_id=property_id,
+            query=request.query,
+            match_count=request.match_count,
+            min_similarity=request.min_similarity,
+        )
+
+    except KnowledgeSearchValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    except EmbeddingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=("The embedding service could not process the search query."),
+        ) from exc
+
+    except KnowledgeRepositoryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=("Knowledge retrieval could not be completed."),
+        ) from exc
+
+    response_matches: list[KnowledgeSearchMatchResponse] = []
+
+    for match in matches:
+        response_matches.append(
+            KnowledgeSearchMatchResponse(
+                chunk_id=match.chunk_id,
+                document_id=match.document_id,
+                document_title=match.document_title,
+                source_key=match.source_key,
+                version_number=match.version_number,
+                chunk_index=match.chunk_index,
+                content=match.content,
+                heading=match.heading,
+                page_number=match.page_number,
+                similarity=match.similarity,
+            )
+        )
+
+    return KnowledgeSearchResponse(
+        query=request.query,
+        returned_count=len(response_matches),
+        matches=response_matches,
     )

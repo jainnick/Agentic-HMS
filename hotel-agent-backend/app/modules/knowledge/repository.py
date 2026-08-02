@@ -1,23 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import (
+    Float,
+    and_,
     func,
     select,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import (
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
 from app.modules.knowledge.chunking import PreparedChunk
 from app.modules.knowledge.embeddings import EmbeddingVector
 from app.modules.knowledge.enums import (
     KnowledgeDocumentStatus,
     KnowledgeSourceType,
-)
-from app.db.models import (
-    KnowledgeChunk,
-    KnowledgeDocument,
 )
 
 
@@ -29,6 +32,30 @@ class KnowledgeChunkCountMismatchError(KnowledgeRepositoryError):
     """
     Raised when chunks and embeddings do not have a one-to-one relationship.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchRow:
+    """
+    One knowledge chunk returned by vector retrieval.
+
+    This is a repository result, not an HTTP response. The service and API
+    layers will later decide which fields should be exposed externally.
+    """
+
+    chunk_id: UUID
+    document_id: UUID
+
+    document_title: str
+    source_key: str
+    version_number: int
+
+    chunk_index: int
+    content: str
+    heading: str | None
+    page_number: int | None
+
+    similarity: float
 
 
 async def find_duplicate_document(
@@ -312,3 +339,90 @@ async def get_document_by_id(
     result: KnowledgeDocument | None = await session.scalar(statement)
 
     return result
+
+
+async def search_knowledge_chunks(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    property_id: UUID,
+    query_embedding: EmbeddingVector,
+    match_count: int,
+    min_similarity: float,
+) -> list[KnowledgeSearchRow]:
+    """
+    Find the most relevant active knowledge chunks for one hotel property.
+
+    The caller is responsible for validating:
+    - query_embedding;
+    - match_count;
+    - min_similarity.
+
+    This repository function focuses only on constructing and executing the
+    tenant-filtered PostgreSQL vector query.
+    """
+
+    cosine_distance = KnowledgeChunk.embedding.op(
+        "<=>",
+        return_type=Float,
+    )(query_embedding)
+
+    similarity = (1.0 - cosine_distance).label("similarity")
+
+    maximum_distance = 1.0 - min_similarity
+
+    statement = (
+        select(
+            KnowledgeChunk.id,
+            KnowledgeChunk.document_id,
+            KnowledgeDocument.title,
+            KnowledgeDocument.source_key,
+            KnowledgeDocument.version_number,
+            KnowledgeChunk.chunk_index,
+            KnowledgeChunk.content,
+            KnowledgeChunk.heading,
+            KnowledgeChunk.page_number,
+            similarity,
+        )
+        .join(
+            KnowledgeDocument,
+            and_(
+                KnowledgeDocument.id == KnowledgeChunk.document_id,
+                KnowledgeDocument.organization_id == KnowledgeChunk.organization_id,
+                KnowledgeDocument.property_id == KnowledgeChunk.property_id,
+            ),
+        )
+        .where(
+            KnowledgeChunk.organization_id == organization_id,
+            KnowledgeChunk.property_id == property_id,
+            KnowledgeDocument.organization_id == organization_id,
+            KnowledgeDocument.property_id == property_id,
+            KnowledgeDocument.status == KnowledgeDocumentStatus.READY,
+            KnowledgeDocument.is_active.is_(True),
+            cosine_distance <= maximum_distance,
+        )
+        .order_by(cosine_distance.asc())
+        .limit(match_count)
+    )
+
+    result = await session.execute(statement)
+
+    search_rows: list[KnowledgeSearchRow] = []
+
+    for row in result.all():
+        search_rows.append(
+            KnowledgeSearchRow(
+                chunk_id=row[0],
+                document_id=row[1],
+                document_title=row[2],
+                source_key=row[3],
+                version_number=row[4],
+                chunk_index=row[5],
+                content=row[6],
+                heading=row[7],
+                page_number=row[8],
+                similarity=float(row[9]),
+            )
+        )
+
+    return search_rows

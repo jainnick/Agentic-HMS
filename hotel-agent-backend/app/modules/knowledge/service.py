@@ -10,6 +10,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.db.models import (
+    KnowledgeDocument,
+)
 from app.modules.knowledge.chunking import (
     ChunkingError,
     PreparedChunk,
@@ -17,6 +20,7 @@ from app.modules.knowledge.chunking import (
 )
 from app.modules.knowledge.embeddings import (
     EmbeddingError,
+    embed_query_async,
     embed_texts_async,
 )
 from app.modules.knowledge.enums import (
@@ -31,10 +35,6 @@ from app.modules.knowledge.ingestion import (
     normalize_source_key,
     validate_pdf_upload,
 )
-from app.db.models import (
-    KnowledgeDocument,
-)
-
 from app.modules.knowledge.repository import (
     KnowledgeRepositoryError,
     create_processing_document,
@@ -44,13 +44,21 @@ from app.modules.knowledge.repository import (
     insert_document_chunks,
     mark_document_failed,
     mark_document_ready,
+    search_knowledge_chunks,
 )
 
 logger = structlog.get_logger(__name__)
 
+MAX_KNOWLEDGE_QUERY_LENGTH = 2_000
+MAX_KNOWLEDGE_MATCH_COUNT = 20
+
 
 class KnowledgeServiceError(Exception):
     """Base error raised by the knowledge service."""
+
+
+class KnowledgeSearchValidationError(KnowledgeServiceError):
+    """Raised when a knowledge-search request contains invalid values."""
 
 
 class DuplicateKnowledgeDocumentError(KnowledgeServiceError):
@@ -80,6 +88,171 @@ class PdfKnowledgeIngestionResult:
 
     document: KnowledgeDocument
     chunk_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchMatch:
+    """
+    One relevant knowledge chunk returned by the retrieval service.
+
+    This object is independent of FastAPI and can be consumed by an API route,
+    an agent tool, or another internal service.
+    """
+
+    chunk_id: UUID
+    document_id: UUID
+
+    document_title: str
+    source_key: str
+    version_number: int
+
+    chunk_index: int
+    content: str
+    heading: str | None
+    page_number: int | None
+
+    similarity: float
+
+
+def normalize_knowledge_search_query(
+    query: str,
+) -> str:
+    """
+    Normalize and validate a hotel-knowledge search query.
+
+    Tabs, new lines, and repeated spaces are collapsed into single spaces.
+    The actual words and punctuation are preserved.
+    """
+
+    normalized_query = " ".join(query.split()).strip()
+
+    if not normalized_query:
+        raise KnowledgeSearchValidationError("Knowledge search query cannot be blank.")
+
+    if len(normalized_query) > MAX_KNOWLEDGE_QUERY_LENGTH:
+        raise KnowledgeSearchValidationError(
+            f"Knowledge search query cannot exceed {MAX_KNOWLEDGE_QUERY_LENGTH} characters."
+        )
+
+    return normalized_query
+
+
+def resolve_knowledge_match_count(
+    match_count: int | None,
+    *,
+    default_match_count: int,
+) -> int:
+    """
+    Resolve the number of chunks retrieval may return.
+
+    When the caller does not provide a value, the configured application
+    default is used.
+    """
+
+    resolved_match_count = default_match_count if match_count is None else match_count
+
+    if not 1 <= resolved_match_count <= MAX_KNOWLEDGE_MATCH_COUNT:
+        raise KnowledgeSearchValidationError(
+            f"Knowledge match count must be between 1 and {MAX_KNOWLEDGE_MATCH_COUNT}."
+        )
+
+    return resolved_match_count
+
+def resolve_knowledge_min_similarity(
+    min_similarity: float | None,
+    *,
+    default_min_similarity: float,
+) -> float:
+    """
+    Resolve and validate the minimum cosine-similarity threshold.
+
+    When the caller does not provide a value, the configured default is used.
+    Valid similarity values are between 0 and 1.
+    """
+
+    resolved_min_similarity = (
+        default_min_similarity
+        if min_similarity is None
+        else min_similarity
+    )
+
+    if not 0.0 <= resolved_min_similarity <= 1.0:
+        raise KnowledgeSearchValidationError(
+            "Minimum similarity must be between 0 and 1."
+        )
+
+    return float(resolved_min_similarity)
+
+
+
+async def search_property_knowledge(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    property_id: UUID,
+    query: str,
+    match_count: int | None = None,
+    min_similarity: float | None = None,
+) -> list[KnowledgeSearchMatch]:
+    """
+    Search active hotel knowledge for one organization and property.
+
+    This service:
+    1. validates and normalizes the query;
+    2. resolves retrieval settings;
+    3. generates the query embedding;
+    4. executes tenant-filtered vector retrieval;
+    5. maps repository rows into service-level results.
+
+    Tenant identifiers must come from a verified TenantContext. They must not
+    be accepted from an LLM-generated tool payload.
+    """
+
+    settings = get_settings()
+
+    normalized_query = normalize_knowledge_search_query(query)
+
+    resolved_match_count = resolve_knowledge_match_count(
+        match_count,
+        default_match_count=settings.rag_match_count,
+    )
+
+    resolved_min_similarity = resolve_knowledge_min_similarity(
+        min_similarity,
+        default_min_similarity=settings.rag_min_similarity,
+    )
+
+    query_embedding = await embed_query_async(normalized_query)
+
+    repository_rows = await search_knowledge_chunks(
+        session,
+        organization_id=organization_id,
+        property_id=property_id,
+        query_embedding=query_embedding,
+        match_count=resolved_match_count,
+        min_similarity=resolved_min_similarity,
+    )
+
+    matches: list[KnowledgeSearchMatch] = []
+
+    for row in repository_rows:
+        matches.append(
+            KnowledgeSearchMatch(
+                chunk_id=row.chunk_id,
+                document_id=row.document_id,
+                document_title=row.document_title,
+                source_key=row.source_key,
+                version_number=row.version_number,
+                chunk_index=row.chunk_index,
+                content=row.content,
+                heading=row.heading,
+                page_number=row.page_number,
+                similarity=row.similarity,
+            )
+        )
+
+    return matches
+
 
 
 def prepare_pdf_chunks(
