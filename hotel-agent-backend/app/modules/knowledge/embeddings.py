@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache, partial
-from typing import Any
+from typing import Any, cast
 
 from anyio import to_thread
 from sentence_transformers import SentenceTransformer
@@ -43,8 +43,11 @@ def get_embedding_model() -> SentenceTransformer:
     settings = get_settings()
 
     try:
-        model = SentenceTransformer(
-            settings.embedding_model,
+        model = cast(
+            SentenceTransformer,
+            SentenceTransformer(
+                settings.embedding_model,
+            ),
         )
     except Exception as exc:
         raise EmbeddingModelLoadError(
