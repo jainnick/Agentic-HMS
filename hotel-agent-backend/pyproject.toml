@@ -21,8 +21,9 @@ dependencies = [
     "python-multipart", 
     "pgvector", 
     "pymupdf", 
-    "sentence-transformers", 
+    "sentence-transformers>=5.4,<6", 
     "openai",
+    "anyio>=4,<5",
 ]
 
 [project.optional-dependencies]

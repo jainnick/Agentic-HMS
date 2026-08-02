@@ -11,9 +11,7 @@ from fastapi.testclient import TestClient
 # This URL is only used during unit-test application startup. Unit tests
 # mock database calls and do not connect to this database.
 if "DATABASE_URL" not in os.environ and not Path(".env").exists():
-    os.environ["DATABASE_URL"] = (
-        "postgresql://postgres:postgres@localhost:5432/postgres"
-    )
+    os.environ["DATABASE_URL"] = "postgresql://postgres:postgres@localhost:5432/postgres"
 
 
 @pytest.fixture
