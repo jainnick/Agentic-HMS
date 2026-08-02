@@ -5,6 +5,7 @@ from hashlib import sha256
 
 MAX_SOURCE_KEY_LENGTH = 120
 MAX_ORIGINAL_FILENAME_LENGTH = 255
+MAX_DOCUMENT_TITLE_LENGTH = 255
 
 PDF_CONTENT_TYPE = "application/pdf"
 PDF_HEADER = b"%PDF-"
@@ -17,6 +18,10 @@ class KnowledgeIngestionValidationError(Exception):
 
 class InvalidSourceKeyError(KnowledgeIngestionValidationError):
     """Raised when a source key cannot be normalized safely."""
+
+
+class InvalidDocumentTitleError(KnowledgeIngestionValidationError):
+    """Raised when a knowledge-document title is invalid."""
 
 
 class InvalidPdfUploadError(KnowledgeIngestionValidationError):
@@ -48,6 +53,29 @@ def calculate_file_checksum(
     """
 
     return sha256(file_bytes).hexdigest()
+
+
+def normalize_document_title(
+    title: str,
+) -> str:
+    """
+    Normalize and validate a knowledge-document display title.
+
+    Unlike source_key, a title remains human-readable. We only normalize
+    repeated whitespace and enforce database constraints.
+    """
+
+    normalized_title = " ".join(title.split())
+
+    if not normalized_title:
+        raise InvalidDocumentTitleError("Document title cannot be blank.")
+
+    if len(normalized_title) > MAX_DOCUMENT_TITLE_LENGTH:
+        raise InvalidDocumentTitleError(
+            f"Document title cannot exceed {MAX_DOCUMENT_TITLE_LENGTH} characters."
+        )
+
+    return normalized_title
 
 
 def normalize_source_key(

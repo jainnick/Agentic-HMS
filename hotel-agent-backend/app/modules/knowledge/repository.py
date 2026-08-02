@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from uuid import UUID
 
 from sqlalchemy import (
@@ -14,7 +15,7 @@ from app.modules.knowledge.enums import (
     KnowledgeDocumentStatus,
     KnowledgeSourceType,
 )
-from app.modules.knowledge.models import (
+from app.db.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
@@ -69,9 +70,7 @@ async def find_duplicate_document(
         .limit(1)
     )
 
-    result: KnowledgeDocument | None = await session.scalar(
-        statement
-    )
+    result: KnowledgeDocument | None = await session.scalar(statement)
 
     return result
 
@@ -310,8 +309,6 @@ async def get_document_by_id(
         KnowledgeDocument.property_id == property_id,
     )
 
-    result: KnowledgeDocument | None = await session.scalar(
-        statement
-    )
+    result: KnowledgeDocument | None = await session.scalar(statement)
 
     return result
