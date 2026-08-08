@@ -215,7 +215,7 @@ async def insert_document_chunks(
             page_number=prepared_chunk.page_number,
             content_hash=prepared_chunk.content_hash,
             embedding=embedding,
-            metadata_={},
+            metadata_=dict(prepared_chunk.metadata),
         )
 
         chunk_rows.append(chunk_row)

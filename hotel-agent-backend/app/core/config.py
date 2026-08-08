@@ -50,9 +50,19 @@ class Settings(BaseSettings):
     # PDF ingestion
     knowledge_max_upload_mb: int = 10
 
-    # Chunk sizes are approximate word counts, not exact LLM tokens.
-    knowledge_chunk_size: int = 500
-    knowledge_chunk_overlap: int = 75
+    # Adaptive PDF chunking.
+    #
+    # target_tokens:
+    #     preferred chunk size when a natural PDF block boundary exists.
+    #
+    # max_tokens:
+    #     hard upper limit before sentence/token splitting is required.
+    #
+    # fallback_overlap_tokens:
+    #     overlap used only for forced tokenizer-window splitting.
+    knowledge_chunk_target_tokens: int = 160
+    knowledge_chunk_max_tokens: int = 220
+    knowledge_chunk_fallback_overlap_tokens: int = 20
 
     # Retrieval defaults
     rag_match_count: int = 6
@@ -98,14 +108,25 @@ class Settings(BaseSettings):
         if self.knowledge_max_upload_mb <= 0:
             raise ValueError("KNOWLEDGE_MAX_UPLOAD_MB must be greater than zero.")
 
-        if self.knowledge_chunk_size <= 0:
-            raise ValueError("KNOWLEDGE_CHUNK_SIZE must be greater than zero.")
+        if self.knowledge_chunk_target_tokens <= 0:
+            raise ValueError("KNOWLEDGE_CHUNK_TARGET_TOKENS must be greater than zero.")
 
-        if self.knowledge_chunk_overlap < 0:
-            raise ValueError("KNOWLEDGE_CHUNK_OVERLAP cannot be negative.")
+        if self.knowledge_chunk_max_tokens <= 0:
+            raise ValueError("KNOWLEDGE_CHUNK_MAX_TOKENS must be greater than zero.")
 
-        if self.knowledge_chunk_overlap >= self.knowledge_chunk_size:
-            raise ValueError("KNOWLEDGE_CHUNK_OVERLAP must be smaller than KNOWLEDGE_CHUNK_SIZE.")
+        if self.knowledge_chunk_target_tokens > self.knowledge_chunk_max_tokens:
+            raise ValueError(
+                "KNOWLEDGE_CHUNK_TARGET_TOKENS cannot be greater than KNOWLEDGE_CHUNK_MAX_TOKENS."
+            )
+
+        if self.knowledge_chunk_fallback_overlap_tokens < 0:
+            raise ValueError("KNOWLEDGE_CHUNK_FALLBACK_OVERLAP_TOKENS cannot be negative.")
+
+        if self.knowledge_chunk_fallback_overlap_tokens >= self.knowledge_chunk_max_tokens:
+            raise ValueError(
+                "KNOWLEDGE_CHUNK_FALLBACK_OVERLAP_TOKENS must be smaller "
+                "than KNOWLEDGE_CHUNK_MAX_TOKENS."
+            )
 
         if self.rag_match_count <= 0:
             raise ValueError("RAG_MATCH_COUNT must be greater than zero.")

@@ -20,8 +20,10 @@ from app.modules.knowledge.chunking import (
 )
 from app.modules.knowledge.embeddings import (
     EmbeddingError,
+    count_embedding_tokens,
     embed_query_async,
     embed_texts_async,
+    split_text_by_embedding_tokens,
 )
 from app.modules.knowledge.enums import (
     KnowledgeSourceType,
@@ -251,43 +253,50 @@ async def search_property_knowledge(
 def prepare_pdf_chunks(
     pdf_bytes: bytes,
     *,
-    chunk_size_words: int,
-    overlap_words: int,
+    target_tokens: int,
+    max_tokens: int,
+    fallback_overlap_tokens: int,
 ) -> list[PreparedChunk]:
     """
-    Extract pages and convert them into prepared chunks.
+    Extract PDF pages and create adaptive tokenizer-aware chunks.
 
-    This synchronous helper is run through prepare_pdf_chunks_async() so
-    PyMuPDF and chunking do not occupy FastAPI's event-loop thread.
+    The same tokenizer used by the embedding model controls chunk size.
     """
 
-    pages = extract_pdf_pages(pdf_bytes)
+    pages = extract_pdf_pages(
+        pdf_bytes,
+    )
 
     return prepare_chunks(
         pages,
-        chunk_size_words=chunk_size_words,
-        overlap_words=overlap_words,
+        target_tokens=target_tokens,
+        max_tokens=max_tokens,
+        fallback_overlap_tokens=(fallback_overlap_tokens),
+        token_counter=count_embedding_tokens,
+        token_window_splitter=(split_text_by_embedding_tokens),
     )
 
 
 async def prepare_pdf_chunks_async(
     pdf_bytes: bytes,
     *,
-    chunk_size_words: int,
-    overlap_words: int,
+    target_tokens: int,
+    max_tokens: int,
+    fallback_overlap_tokens: int,
 ) -> list[PreparedChunk]:
-    """
-    Run PDF extraction and chunking in an AnyIO worker thread.
-    """
+    """Run PDF extraction and adaptive chunking in a worker thread."""
 
     preparation_call = partial(
         prepare_pdf_chunks,
         pdf_bytes,
-        chunk_size_words=chunk_size_words,
-        overlap_words=overlap_words,
+        target_tokens=target_tokens,
+        max_tokens=max_tokens,
+        fallback_overlap_tokens=(fallback_overlap_tokens),
     )
 
-    return await to_thread.run_sync(preparation_call)
+    return await to_thread.run_sync(
+        preparation_call,
+    )
 
 
 def build_safe_processing_error_message(
@@ -412,8 +421,53 @@ async def ingest_pdf_document(
     try:
         prepared_chunks = await prepare_pdf_chunks_async(
             pdf_bytes,
-            chunk_size_words=(settings.knowledge_chunk_size),
-            overlap_words=(settings.knowledge_chunk_overlap),
+            target_tokens=(settings.knowledge_chunk_target_tokens),
+            max_tokens=(settings.knowledge_chunk_max_tokens),
+            fallback_overlap_tokens=(settings.knowledge_chunk_fallback_overlap_tokens),
+        )
+
+        token_counts: list[int] = []
+
+        for chunk in prepared_chunks:
+            token_count = chunk.metadata.get(
+                "token_count",
+            )
+
+            if isinstance(
+                token_count,
+                int,
+            ):
+                token_counts.append(
+                    token_count,
+                )
+
+        logger.info(
+            "knowledge_pdf_chunks_prepared",
+            organization_id=str(
+                organization_id,
+            ),
+            property_id=str(
+                property_id,
+            ),
+            document_id=str(
+                document.id,
+            ),
+            page_count=len(
+                {chunk.page_number for chunk in prepared_chunks if chunk.page_number is not None}
+            ),
+            chunk_count=len(
+                prepared_chunks,
+            ),
+            minimum_chunk_tokens=(min(token_counts) if token_counts else None),
+            maximum_chunk_tokens=(max(token_counts) if token_counts else None),
+            average_chunk_tokens=(
+                round(
+                    sum(token_counts) / len(token_counts),
+                    2,
+                )
+                if token_counts
+                else None
+            ),
         )
 
         chunk_texts = [chunk.content for chunk in prepared_chunks]

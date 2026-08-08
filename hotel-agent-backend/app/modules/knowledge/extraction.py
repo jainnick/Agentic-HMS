@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import pymupdf
 
@@ -23,22 +24,24 @@ class ExtractedPage:
     Text extracted from one physical PDF page.
 
     Page numbers are one-based so they match the page numbers shown to users.
+
+    Text blocks inside a page are separated by a blank line. This allows the
+    chunker to prefer PDF structure before falling back to sentences/tokens.
     """
 
     page_number: int
     text: str
 
 
-def normalize_extracted_text(text: str) -> str:
+def normalize_extracted_text(
+    text: str,
+) -> str:
     """
-    Normalize text produced by PyMuPDF.
+    Normalize one extracted PDF text block.
 
-    PDF text often contains:
-    - Windows and Unix line endings;
-    - spaces at the start or end of lines;
-    - many empty lines.
-
-    We remove that noise while keeping meaningful line separation.
+    We collapse repeated whitespace inside individual lines while keeping
+    lines readable. Block boundaries themselves are added by
+    extract_pdf_pages().
     """
 
     normalized_line_endings = text.replace(
@@ -49,22 +52,45 @@ def normalize_extracted_text(text: str) -> str:
         "\n",
     )
 
-    cleaned_lines = [line.strip() for line in normalized_line_endings.split("\n") if line.strip()]
+    cleaned_lines: list[str] = []
 
-    return "\n".join(cleaned_lines).strip()
+    for raw_line in normalized_line_endings.split("\n"):
+        cleaned_line = " ".join(
+            raw_line.split(),
+        ).strip()
+
+        if cleaned_line:
+            cleaned_lines.append(
+                cleaned_line,
+            )
+
+    return "\n".join(
+        cleaned_lines,
+    ).strip()
 
 
 def extract_pdf_pages(
     pdf_bytes: bytes,
 ) -> list[ExtractedPage]:
     """
-    Extract readable text from a PDF while preserving page numbers.
+    Extract readable text blocks while preserving physical page numbers.
 
-    This function does not:
+    Why blocks instead of one flat text string?
+
+    PDF pages frequently contain separate visual regions such as:
+    - headings;
+    - paragraphs;
+    - policy descriptions;
+    - list sections;
+    - table-like areas.
+
+    PyMuPDF's "blocks" extraction gives us a useful free structural signal.
+
+    This function still does not:
     - perform OCR;
     - create chunks;
-    - create embeddings;
-    - write anything to the database.
+    - generate embeddings;
+    - write to the database.
     """
 
     if not pdf_bytes:
@@ -80,27 +106,63 @@ def extract_pdf_pages(
 
             extracted_pages: list[ExtractedPage] = []
 
-            for page_index in range(document.page_count):
-                page = document.load_page(page_index)
+            for page_index in range(
+                document.page_count,
+            ):
+                page = document.load_page(
+                    page_index,
+                )
 
-                raw_text = page.get_text(
-                    "text",
+                raw_blocks: Any = page.get_text(
+                    "blocks",
                     sort=True,
                 )
 
-                cleaned_text = normalize_extracted_text(
-                    raw_text,
-                )
+                cleaned_blocks: list[str] = []
 
-                # Image-only pages may contain no extractable text.
-                # We skip those pages but continue checking the rest.
-                if not cleaned_text:
+                for block in raw_blocks:
+                    # PyMuPDF block tuples contain coordinates followed by
+                    # the actual block text at index 4.
+                    if not isinstance(
+                        block,
+                        (tuple, list),
+                    ):
+                        continue
+
+                    if len(block) < 5:
+                        continue
+
+                    raw_block_text = block[4]
+
+                    if not isinstance(
+                        raw_block_text,
+                        str,
+                    ):
+                        continue
+
+                    cleaned_block = normalize_extracted_text(
+                        raw_block_text,
+                    )
+
+                    if cleaned_block:
+                        cleaned_blocks.append(
+                            cleaned_block,
+                        )
+
+                if not cleaned_blocks:
+                    # Image-only/scanned pages may have no text. We skip the
+                    # individual page and continue checking the document.
                     continue
+
+                # A double newline becomes our explicit structural boundary.
+                page_text = "\n\n".join(
+                    cleaned_blocks,
+                ).strip()
 
                 extracted_pages.append(
                     ExtractedPage(
                         page_number=page_index + 1,
-                        text=cleaned_text,
+                        text=page_text,
                     )
                 )
 

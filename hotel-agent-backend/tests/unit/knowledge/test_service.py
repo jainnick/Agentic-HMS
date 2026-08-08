@@ -74,8 +74,9 @@ def patch_test_settings(
 ) -> None:
     settings = SimpleNamespace(
         knowledge_max_upload_mb=10,
-        knowledge_chunk_size=500,
-        knowledge_chunk_overlap=75,
+        knowledge_chunk_target_tokens=160,
+        knowledge_chunk_max_tokens=220,
+        knowledge_chunk_fallback_overlap_tokens=20,
         rag_match_count=6,
         rag_min_similarity=0.45,
     )
