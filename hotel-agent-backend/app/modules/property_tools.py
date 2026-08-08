@@ -15,8 +15,9 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     select,
+    text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -86,6 +87,7 @@ class PropertyTool(Base):
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
         default=uuid4,
+        server_default=text("gen_random_uuid()"),
     )
 
     organization_id: Mapped[UUID] = mapped_column(
@@ -239,38 +241,44 @@ async def set_property_tool(
 ) -> PropertyToolResponse:
     """
     Create or update one property-specific tool override.
+
+    PostgreSQL ON CONFLICT performs this atomically:
+    - no existing property/tool row -> INSERT
+    - existing property/tool row -> UPDATE
     """
 
-    existing = await session.scalar(
-        select(PropertyTool).where(
-            PropertyTool.property_id == property_id,
-            PropertyTool.tool_name == tool_name.value,
-        )
-    )
-
-    if existing is None:
-        existing = PropertyTool(
+    statement = (
+        insert(PropertyTool)
+        .values(
             organization_id=organization_id,
             property_id=property_id,
             tool_name=tool_name.value,
             enabled=payload.enabled,
             configuration=payload.configuration,
         )
+        .on_conflict_do_update(
+            constraint="uq_property_tools_property_id_tool_name",
+            set_={
+                "enabled": payload.enabled,
+                "configuration": payload.configuration,
+                "updated_at": func.now(),
+            },
+        )
+        .returning(PropertyTool)
+    )
 
-        session.add(existing)
+    property_tool = await session.scalar(statement)
 
-    else:
-        existing.enabled = payload.enabled
-        existing.configuration = payload.configuration
+    if property_tool is None:
+        raise RuntimeError(
+            "Property tool configuration could not be saved.",
+        )
 
     await session.commit()
 
-    return PropertyToolResponse(
-        tool_name=tool_name,
-        enabled=existing.enabled,
-        configuration=existing.configuration,
+    return PropertyToolResponse.model_validate(
+        property_tool,
     )
-
 
 async def is_property_tool_enabled(
     session: AsyncSession,
