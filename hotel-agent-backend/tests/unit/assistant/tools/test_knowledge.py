@@ -167,11 +167,16 @@ async def test_execute_knowledge_search_tool_uses_trusted_context(
     match = result.matches[0]
 
     assert match.document_title == "Guest Policies"
-    assert match.source_key == "guest-policies"
     assert match.heading == "Check-in and checkout"
     assert match.page_number == 4
     assert match.content == "Checkout time is 11:00 AM."
-    assert match.similarity == pytest.approx(0.82)
+
+    serialized_match = match.model_dump()
+
+    assert "source_key" not in serialized_match
+    assert "similarity" not in serialized_match
+    assert "chunk_id" not in serialized_match
+    assert "document_id" not in serialized_match
 
 
 @pytest.mark.asyncio

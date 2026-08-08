@@ -55,17 +55,16 @@ class KnowledgeSearchToolInput(BaseModel):
 
 class KnowledgeSearchToolMatch(BaseModel):
     """
-    One source passage returned to the assistant.
+    One safe source passage returned to the assistant.
 
-    Internal database identifiers and embeddings are intentionally excluded.
+    Internal database identifiers, source keys, similarity scores, and
+    embeddings are intentionally excluded.
     """
 
     document_title: str
-    source_key: str
     heading: str | None
     page_number: int | None
     content: str
-    similarity: float
 
 
 class KnowledgeSearchToolResult(BaseModel):
@@ -84,8 +83,8 @@ async def execute_knowledge_search_tool(
     """
     Search the selected property's active hotel knowledge.
 
-    This is a thin adapter between the future agent and the existing
-    retrieval service. It does not generate a guest-facing response.
+    This is a thin adapter between the assistant and the existing retrieval
+    service. It does not generate a guest-facing response.
     """
 
     matches = await search_property_knowledge(
@@ -99,11 +98,9 @@ async def execute_knowledge_search_tool(
     tool_matches = [
         KnowledgeSearchToolMatch(
             document_title=match.document_title,
-            source_key=match.source_key,
             heading=match.heading,
             page_number=match.page_number,
             content=match.content,
-            similarity=match.similarity,
         )
         for match in matches
     ]

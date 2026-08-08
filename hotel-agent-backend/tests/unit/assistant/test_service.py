@@ -157,16 +157,16 @@ async def test_assistant_executes_knowledge_tool_then_answers(
         matches=[
             KnowledgeSearchToolMatch(
                 document_title="Guest Policies",
-                source_key="guest-policies",
                 heading="Check-in and checkout",
                 page_number=4,
                 content="Checkout time is 11:00 AM.",
-                similarity=0.82,
             )
         ],
     )
 
-    tool_mock = AsyncMock(return_value=tool_result)
+    tool_mock = AsyncMock(
+        return_value=tool_result,
+    )
 
     monkeypatch.setattr(
         assistant_service,
@@ -193,11 +193,11 @@ async def test_assistant_executes_knowledge_tool_then_answers(
     assert result.answer.startswith("Checkout is at 11:00 AM")
 
     assert len(result.sources) == 1
-    assert result.sources[0].document_title == ("Guest Policies")
+    assert result.sources[0].document_title == "Guest Policies"
     assert result.sources[0].page_number == 4
 
     assert len(result.tool_calls) == 1
-    assert result.tool_calls[0].name == ("knowledge.search")
+    assert result.tool_calls[0].name == "knowledge.search"
     assert result.tool_calls[0].returned_count == 1
 
     second_call_messages = model_mock.await_args_list[1].args[0]
@@ -205,7 +205,12 @@ async def test_assistant_executes_knowledge_tool_then_answers(
     tool_messages = [message for message in second_call_messages if message.get("role") == "tool"]
 
     assert len(tool_messages) == 1
-    assert tool_messages[0]["tool_call_id"] == ("call-1")
+    assert tool_messages[0]["tool_call_id"] == "call-1"
+
+    tool_message_content = tool_messages[0]["content"]
+
+    assert "source_key" not in tool_message_content
+    assert "similarity" not in tool_message_content
 
 
 @pytest.mark.asyncio

@@ -158,6 +158,7 @@ def resolve_knowledge_match_count(
 
     return resolved_match_count
 
+
 def resolve_knowledge_min_similarity(
     min_similarity: float | None,
     *,
@@ -170,19 +171,12 @@ def resolve_knowledge_min_similarity(
     Valid similarity values are between 0 and 1.
     """
 
-    resolved_min_similarity = (
-        default_min_similarity
-        if min_similarity is None
-        else min_similarity
-    )
+    resolved_min_similarity = default_min_similarity if min_similarity is None else min_similarity
 
     if not 0.0 <= resolved_min_similarity <= 1.0:
-        raise KnowledgeSearchValidationError(
-            "Minimum similarity must be between 0 and 1."
-        )
+        raise KnowledgeSearchValidationError("Minimum similarity must be between 0 and 1.")
 
     return float(resolved_min_similarity)
-
 
 
 async def search_property_knowledge(
@@ -252,7 +246,6 @@ async def search_property_knowledge(
         )
 
     return matches
-
 
 
 def prepare_pdf_chunks(

@@ -8,6 +8,7 @@ from app.core.config import get_settings
 from app.core.database import close_database_connections
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
+from app.modules.assistant.routes import router as assistant_router
 from app.modules.identity.routes import router as identity_router
 from app.modules.knowledge.routes import router as knowledge_router
 from app.modules.onboarding.routes import router as onboarding_router
@@ -65,6 +66,11 @@ app.include_router(
 
 app.include_router(
     knowledge_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    assistant_router,
     prefix=settings.api_v1_prefix,
 )
 

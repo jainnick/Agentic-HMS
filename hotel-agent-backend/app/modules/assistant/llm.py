@@ -122,27 +122,18 @@ def get_llm_client() -> AsyncOpenAI:
     settings = get_settings()
 
     if settings.llm_api_key is None:
-        raise AssistantLlmConfigurationError(
-            "LLM_API_KEY is not configured."
-        )
+        raise AssistantLlmConfigurationError("LLM_API_KEY is not configured.")
 
     if settings.llm_model is None or not settings.llm_model.strip():
-        raise AssistantLlmConfigurationError(
-            "LLM_MODEL is not configured."
-        )
+        raise AssistantLlmConfigurationError("LLM_MODEL is not configured.")
 
     client_options: dict[str, Any] = {
         "api_key": settings.llm_api_key.get_secret_value(),
         "timeout": settings.llm_timeout_seconds,
     }
 
-    if (
-        settings.llm_base_url is not None
-        and settings.llm_base_url.strip()
-    ):
-        client_options["base_url"] = (
-            settings.llm_base_url.strip()
-        )
+    if settings.llm_base_url is not None and settings.llm_base_url.strip():
+        client_options["base_url"] = settings.llm_base_url.strip()
 
     return AsyncOpenAI(
         **client_options,
@@ -206,9 +197,7 @@ async def generate_assistant_turn(
     settings = get_settings()
 
     if settings.llm_model is None or not settings.llm_model.strip():
-        raise AssistantLlmConfigurationError(
-            "LLM_MODEL is not configured."
-        )
+        raise AssistantLlmConfigurationError("LLM_MODEL is not configured.")
 
     client = get_llm_client()
 
@@ -226,27 +215,20 @@ async def generate_assistant_turn(
                 ],
             ),
             tool_choice="auto",
-            max_completion_tokens=(
-                settings.llm_max_output_tokens
-            ),
+            max_completion_tokens=(settings.llm_max_output_tokens),
         )
 
     except openai.APITimeoutError as exc:
-        raise AssistantLlmRequestError(
-            "The language-model request timed out."
-        ) from exc
+        raise AssistantLlmRequestError("The language-model request timed out.") from exc
 
     except openai.APIConnectionError as exc:
-        raise AssistantLlmRequestError(
-            "The language-model provider could not be reached."
-        ) from exc
+        raise AssistantLlmRequestError("The language-model provider could not be reached.") from exc
 
     # RateLimitError is a subtype of APIStatusError, so it must be handled
     # before the broader APIStatusError block.
     except openai.RateLimitError as exc:
         raise AssistantLlmRateLimitError(
-            "The Hotel Assistant is temporarily busy. "
-            "Please retry shortly."
+            "The Hotel Assistant is temporarily busy. Please retry shortly."
         ) from exc
 
     except openai.APIStatusError as exc:
@@ -260,19 +242,13 @@ async def generate_assistant_turn(
             ),
         )
 
-        raise AssistantLlmRequestError(
-            "The language-model provider rejected the request."
-        ) from exc
+        raise AssistantLlmRequestError("The language-model provider rejected the request.") from exc
 
     except openai.OpenAIError as exc:
-        raise AssistantLlmRequestError(
-            "The language-model request failed."
-        ) from exc
+        raise AssistantLlmRequestError("The language-model request failed.") from exc
 
     if not completion.choices:
-        raise AssistantLlmResponseError(
-            "The language model returned no completion choices."
-        )
+        raise AssistantLlmResponseError("The language model returned no completion choices.")
 
     message = completion.choices[0].message
 
@@ -284,9 +260,7 @@ async def generate_assistant_turn(
         if normalized_text:
             text = normalized_text
 
-    normalized_tool_calls: list[
-        AssistantFunctionCall
-    ] = []
+    normalized_tool_calls: list[AssistantFunctionCall] = []
 
     for tool_call in message.tool_calls or []:
         # New OpenAI SDK versions type message.tool_calls as a union of:
@@ -302,8 +276,7 @@ async def generate_assistant_turn(
             ChatCompletionMessageFunctionToolCall,
         ):
             raise AssistantLlmResponseError(
-                "The language model returned an unsupported "
-                "custom tool call."
+                "The language model returned an unsupported custom tool call."
             )
 
         normalized_tool_calls.append(
@@ -327,11 +300,7 @@ async def generate_assistant_turn(
         None,
     )
 
-    request_id = (
-        request_id_value
-        if isinstance(request_id_value, str)
-        else None
-    )
+    request_id = request_id_value if isinstance(request_id_value, str) else None
 
     return AssistantModelTurn(
         text=text,

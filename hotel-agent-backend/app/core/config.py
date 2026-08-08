@@ -114,24 +114,16 @@ class Settings(BaseSettings):
             raise ValueError("RAG_MIN_SIMILARITY must be between 0 and 1.")
 
         if self.llm_timeout_seconds <= 0:
-            raise ValueError(
-                "LLM_TIMEOUT_SECONDS must be greater than zero."
-            )
+            raise ValueError("LLM_TIMEOUT_SECONDS must be greater than zero.")
 
         if self.llm_max_output_tokens <= 0:
-            raise ValueError(
-                "LLM_MAX_OUTPUT_TOKENS must be greater than zero."
-            )
+            raise ValueError("LLM_MAX_OUTPUT_TOKENS must be greater than zero.")
 
         if self.assistant_max_message_length <= 0:
-            raise ValueError(
-                "ASSISTANT_MAX_MESSAGE_LENGTH must be greater than zero."
-            )
+            raise ValueError("ASSISTANT_MAX_MESSAGE_LENGTH must be greater than zero.")
 
         if not 1 <= self.assistant_max_tool_rounds <= 10:
-            raise ValueError(
-                "ASSISTANT_MAX_TOOL_ROUNDS must be between 1 and 10."
-            )
+            raise ValueError("ASSISTANT_MAX_TOOL_ROUNDS must be between 1 and 10.")
 
         return self
 
