@@ -12,6 +12,7 @@ from app.modules.assistant.routes import router as assistant_router
 from app.modules.identity.routes import router as identity_router
 from app.modules.knowledge.routes import router as knowledge_router
 from app.modules.onboarding.routes import router as onboarding_router
+from app.modules.property_tools import router as property_tools_router
 
 settings = get_settings()
 
@@ -61,6 +62,11 @@ app.include_router(
 
 app.include_router(
     onboarding_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    property_tools_router,
     prefix=settings.api_v1_prefix,
 )
 

@@ -3,6 +3,7 @@ from app.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
+from app.modules.property_tools import PropertyTool
 from app.modules.tenancy.models import (
     Organization,
     OrganizationMembership,
@@ -18,4 +19,5 @@ __all__ = [
     "OrganizationMembership",
     "Property",
     "PropertyMembership",
+    "PropertyTool",
 ]
