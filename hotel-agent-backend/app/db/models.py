@@ -1,9 +1,14 @@
 from app.db.base import Base
+from app.modules.assistant.sessions import (
+    AssistantSession,
+)
 from app.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
-from app.modules.property_tools import PropertyTool
+from app.modules.property_tools import (
+    PropertyTool,
+)
 from app.modules.rooms import (
     RoomBooking,
     RoomType,
@@ -15,7 +20,9 @@ from app.modules.tenancy.models import (
     PropertyMembership,
 )
 
+
 __all__ = [
+    "AssistantSession",
     "Base",
     "KnowledgeChunk",
     "KnowledgeDocument",
