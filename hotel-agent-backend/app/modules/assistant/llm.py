@@ -345,6 +345,16 @@ async def generate_assistant_turn(
 ) -> AssistantModelTurn:
     """
     Send one turn to the configured LLM.
+
+    Groq validates generated function calls before
+    returning them to us. Occasionally a model may
+    generate malformed tool-call syntax even though
+    the intended tool arguments are correct.
+
+    For Groq's specific `tool_use_failed` 400 error,
+    retry the model generation once.
+
+    We do NOT retry arbitrary 400 responses.
     """
 
     settings = get_settings()
@@ -359,88 +369,204 @@ async def generate_assistant_turn(
 
     client = get_llm_client()
 
-    try:
-        request_options: dict[
-            str,
+    request_options: dict[
+        str,
+        Any,
+    ] = {
+        "model": (
+            settings
+            .llm_model
+            .strip()
+        ),
+        "messages": cast(
             Any,
-        ] = {
-            "model": (
-                settings
-                .llm_model
-                .strip()
-            ),
-            "messages": cast(
-                Any,
-                messages,
-            ),
-            "max_completion_tokens": (
-                settings
-                .llm_max_output_tokens
-            ),
-        }
+            messages,
+        ),
+        "max_completion_tokens": (
+            settings
+            .llm_max_output_tokens
+        ),
 
-        if tool_definitions:
-            request_options[
-                "tools"
-            ] = cast(
-                Any,
-                tool_definitions,
-            )
+        # Hotel operations benefit from deterministic
+        # structured tool generation rather than
+        # creative sampling.
+        "temperature": 0,
+    }
 
-            request_options[
-                "tool_choice"
-            ] = "auto"
-
-        completion = (
-            await client
-            .chat
-            .completions
-            .create(
-                **request_options
-            )
+    if tool_definitions:
+        request_options[
+            "tools"
+        ] = cast(
+            Any,
+            tool_definitions,
         )
 
-    except openai.APITimeoutError as exc:
-        raise AssistantLlmRequestError(
-            "The language-model request "
-            "timed out."
-        ) from exc
+        request_options[
+            "tool_choice"
+        ] = "auto"
 
-    except openai.APIConnectionError as exc:
+    completion = None
+
+    # One normal attempt + one targeted retry.
+    for attempt in range(2):
+        try:
+            completion = (
+                await client
+                .chat
+                .completions
+                .create(
+                    **request_options
+                )
+            )
+
+            break
+
+        except openai.APITimeoutError as exc:
+            logger.warning(
+                "assistant_llm_timeout",
+                model=settings.llm_model,
+            )
+
+            raise AssistantLlmRequestError(
+                "The language-model request "
+                "timed out."
+            ) from exc
+
+        except openai.APIConnectionError as exc:
+            logger.warning(
+                "assistant_llm_connection_error",
+                model=settings.llm_model,
+                error_type=(
+                    type(exc).__name__
+                ),
+            )
+
+            raise AssistantLlmRequestError(
+                "The language-model provider "
+                "could not be reached."
+            ) from exc
+
+        except openai.RateLimitError as exc:
+            raise AssistantLlmRateLimitError(
+                "The Hotel Assistant is "
+                "temporarily busy. "
+                "Please retry shortly."
+            ) from exc
+
+        except openai.BadRequestError as exc:
+            error_body = (
+                exc.body
+                if isinstance(
+                    exc.body,
+                    dict,
+                )
+                else {}
+            )
+
+            error_details = (
+                error_body.get(
+                    "error",
+                    {}
+                )
+                if isinstance(
+                    error_body,
+                    dict,
+                )
+                else {}
+            )
+
+            error_code = (
+                error_details.get(
+                    "code"
+                )
+                if isinstance(
+                    error_details,
+                    dict,
+                )
+                else None
+            )
+
+            # Groq validates generated tool calls.
+            #
+            # A tool_use_failed response means the
+            # model intended to call a tool but did
+            # not produce provider-valid tool syntax.
+            #
+            # Retry exactly once because another
+            # deterministic generation commonly
+            # resolves this model-formatting failure.
+            if (
+                error_code
+                == "tool_use_failed"
+                and attempt == 0
+            ):
+                logger.warning(
+                    "assistant_llm_tool_use_retry",
+                    model=(
+                        settings.llm_model
+                    ),
+                    request_id=getattr(
+                        exc,
+                        "request_id",
+                        None,
+                    ),
+                )
+
+                continue
+
+            logger.warning(
+                "assistant_llm_bad_request",
+                status_code=(
+                    exc.status_code
+                ),
+                request_id=getattr(
+                    exc,
+                    "request_id",
+                    None,
+                ),
+                error_code=error_code,
+                model=(
+                    settings.llm_model
+                ),
+            )
+
+            raise AssistantLlmRequestError(
+                "The language-model provider "
+                "rejected the request."
+            ) from exc
+
+        except openai.APIStatusError as exc:
+            logger.warning(
+                "assistant_llm_status_error",
+                status_code=(
+                    exc.status_code
+                ),
+                request_id=getattr(
+                    exc,
+                    "request_id",
+                    None,
+                ),
+                model=(
+                    settings.llm_model
+                ),
+            )
+
+            raise AssistantLlmRequestError(
+                "The language-model provider "
+                "rejected the request."
+            ) from exc
+
+        except openai.OpenAIError as exc:
+            raise AssistantLlmRequestError(
+                "The language-model request "
+                "failed."
+            ) from exc
+
+    if completion is None:
         raise AssistantLlmRequestError(
             "The language-model provider "
-            "could not be reached."
-        ) from exc
-
-    except openai.RateLimitError as exc:
-        raise AssistantLlmRateLimitError(
-            "The Hotel Assistant is temporarily "
-            "busy. Please retry shortly."
-        ) from exc
-
-    except openai.APIStatusError as exc:
-        logger.exception(
-            "assistant_llm_status_error",
-            status_code=(
-                exc.status_code
-            ),
-            request_id=getattr(
-                exc,
-                "request_id",
-                None,
-            ),
+            "could not generate a valid tool call."
         )
-
-        raise AssistantLlmRequestError(
-            "The language-model provider "
-            "rejected the request."
-        ) from exc
-
-    except openai.OpenAIError as exc:
-        raise AssistantLlmRequestError(
-            "The language-model request "
-            "failed."
-        ) from exc
 
     if not completion.choices:
         raise AssistantLlmResponseError(
@@ -464,9 +590,7 @@ async def generate_assistant_turn(
         )
 
         if normalized_text:
-            text = (
-                normalized_text
-            )
+            text = normalized_text
 
     normalized_tool_calls: list[
         AssistantFunctionCall
