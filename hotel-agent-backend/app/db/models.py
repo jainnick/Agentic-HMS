@@ -4,6 +4,10 @@ from app.modules.knowledge.models import (
     KnowledgeDocument,
 )
 from app.modules.property_tools import PropertyTool
+from app.modules.rooms import (
+    RoomBooking,
+    RoomType,
+)
 from app.modules.tenancy.models import (
     Organization,
     OrganizationMembership,
@@ -20,4 +24,6 @@ __all__ = [
     "Property",
     "PropertyMembership",
     "PropertyTool",
+    "RoomBooking",
+    "RoomType",
 ]

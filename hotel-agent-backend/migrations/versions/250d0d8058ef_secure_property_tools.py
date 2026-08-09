@@ -5,20 +5,20 @@ Revises: 86f9c1691f20
 Create Date: 2026-08-09 01:28:29.606989
 
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
 
 from alembic import op
-import sqlalchemy as sa
 
-
-# revision identifiers, used by Alembic.
-revision: str = '250d0d8058ef'
-down_revision: Union[str, Sequence[str], None] = '86f9c1691f20'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision: str = "250d0d8058ef"
+down_revision: str | Sequence[str] | None = "86f9c1691f20"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Secure the property-tools table."""
+
     op.execute(
         """
         ALTER TABLE public.property_tools
@@ -36,6 +36,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Reverse property-tools security changes."""
+
     op.execute(
         """
         ALTER TABLE public.property_tools
@@ -50,8 +52,3 @@ def downgrade() -> None:
         DISABLE ROW LEVEL SECURITY
         """
     )
-
-
-def downgrade() -> None:
-    """Downgrade schema."""
-    pass
