@@ -280,6 +280,7 @@ async def set_property_tool(
         property_tool,
     )
 
+
 async def is_property_tool_enabled(
     session: AsyncSession,
     *,

@@ -59,10 +59,7 @@ async def test_defaults_are_returned_without_database_rows(
         property_id=property_.id,
     )
 
-    states = {
-        tool.tool_name: tool.enabled
-        for tool in tools
-    }
+    states = {tool.tool_name: tool.enabled for tool in tools}
 
     assert states == {
         PropertyToolName.KNOWLEDGE_SEARCH: True,
@@ -158,9 +155,7 @@ async def test_property_tool_overrides_are_property_scoped(
     )
 
     room_availability = next(
-        tool
-        for tool in tools_b
-        if tool.tool_name == PropertyToolName.ROOM_AVAILABILITY
+        tool for tool in tools_b if tool.tool_name == PropertyToolName.ROOM_AVAILABILITY
     )
 
     assert room_availability.enabled is False
