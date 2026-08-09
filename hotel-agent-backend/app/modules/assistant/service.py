@@ -5,11 +5,14 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from app.core.config import get_settings
-from app.modules.assistant.context import AssistantToolContext
+from app.modules.assistant.context import (
+    AssistantToolContext,
+)
 from app.modules.assistant.llm import (
     AssistantFunctionCall,
     AssistantMessage,
     AssistantModelTurn,
+    build_assistant_tool_definitions,
     generate_assistant_turn,
 )
 from app.modules.assistant.prompts import (
@@ -17,62 +20,86 @@ from app.modules.assistant.prompts import (
 )
 from app.modules.assistant.tools.knowledge import (
     KNOWLEDGE_SEARCH_TOOL_LABEL,
-    KNOWLEDGE_SEARCH_TOOL_NAME,
     KnowledgeSearchToolInput,
     KnowledgeSearchToolResult,
     execute_knowledge_search_tool,
 )
+from app.modules.assistant.tools.rooms import (
+    ROOM_AVAILABILITY_TOOL_LABEL,
+    RoomAvailabilityToolInput,
+    RoomAvailabilityToolResult,
+    execute_room_availability_tool,
+)
+from app.modules.property_tools import (
+    PropertyToolName,
+    list_property_tools,
+)
+from app.modules.rooms import (
+    RoomValidationError,
+)
 
 
 class AssistantServiceError(Exception):
-    """Base error raised by the Hotel Assistant service."""
+    """Base Hotel Assistant service error."""
 
 
 class AssistantMessageValidationError(AssistantServiceError):
-    """Raised when the supplied guest message is invalid."""
+    """Invalid guest message."""
 
 
 class AssistantUnsupportedToolError(AssistantServiceError):
-    """Raised when the model requests a tool that is not available."""
+    """Model requested an unavailable tool."""
 
 
 class AssistantToolArgumentsError(AssistantServiceError):
-    """Raised when model-generated tool arguments are invalid."""
+    """Model produced invalid tool arguments."""
 
 
 class AssistantToolRoundLimitError(AssistantServiceError):
-    """Raised when the model exceeds the permitted tool-call rounds."""
+    """Maximum tool rounds exceeded."""
 
 
 class AssistantEmptyResponseError(AssistantServiceError):
-    """Raised when the model returns neither text nor a tool call."""
+    """Model returned no usable response."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(
+    frozen=True,
+    slots=True,
+)
 class AssistantSource:
-    """One hotel document source associated with the assistant answer."""
+    """One knowledge source used by assistant."""
 
     document_title: str
     page_number: int | None
     heading: str | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(
+    frozen=True,
+    slots=True,
+)
 class AssistantToolTrace:
-    """Summary of one successfully executed assistant tool call."""
+    """Safe summary of a tool execution."""
 
     call_id: str
     name: str
     returned_count: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(
+    frozen=True,
+    slots=True,
+)
 class HotelAssistantResult:
-    """Final result returned by the Hotel Assistant orchestration."""
+    """Final assistant result."""
 
     answer: str
+
     sources: list[AssistantSource]
+
     tool_calls: list[AssistantToolTrace]
+
     model_request_ids: list[str]
 
 
@@ -81,7 +108,7 @@ def normalize_assistant_message(
     *,
     max_length: int,
 ) -> str:
-    """Normalize and validate one guest message."""
+    """Normalize and validate guest input."""
 
     normalized_message = " ".join(message.split()).strip()
 
@@ -102,10 +129,7 @@ def collect_knowledge_sources(
     existing_sources: list[AssistantSource],
 ) -> list[AssistantSource]:
     """
-    Add unique document/page sources from a knowledge tool result.
-
-    This records candidate sources supplied to the model. A later citation
-    layer can track which exact passages were used in the final sentence.
+    Add unique knowledge document/page sources.
     """
 
     source_keys = {
@@ -131,8 +155,8 @@ def collect_knowledge_sources(
 
         collected_sources.append(
             AssistantSource(
-                document_title=match.document_title,
-                page_number=match.page_number,
+                document_title=(match.document_title),
+                page_number=(match.page_number),
                 heading=match.heading,
             )
         )
@@ -142,27 +166,103 @@ def collect_knowledge_sources(
     return collected_sources
 
 
+async def get_enabled_assistant_tools(
+    context: AssistantToolContext,
+) -> set[PropertyToolName]:
+    """
+    Resolve effective PR4 capabilities once per
+    assistant request.
+    """
+
+    property_tools = await list_property_tools(
+        context.session,
+        property_id=context.property_id,
+    )
+
+    return {property_tool.tool_name for property_tool in property_tools if property_tool.enabled}
+
+
 async def execute_requested_tool(
     tool_call: AssistantFunctionCall,
     *,
     context: AssistantToolContext,
-) -> KnowledgeSearchToolResult:
-    """Validate and execute one model-requested assistant tool."""
+    enabled_tools: set[PropertyToolName],
+) -> KnowledgeSearchToolResult | RoomAvailabilityToolResult:
+    """
+    Validate and execute one requested tool.
 
-    if tool_call.name != KNOWLEDGE_SEARCH_TOOL_NAME:
-        raise AssistantUnsupportedToolError(f"Unsupported assistant tool: {tool_call.name}.")
+    Model-generated arguments are untrusted.
+    Tenant context comes from the backend.
+    """
 
     try:
-        tool_input = KnowledgeSearchToolInput.model_validate_json(tool_call.arguments)
+        property_tool = PropertyToolName(tool_call.name)
 
-    except ValidationError as exc:
-        raise AssistantToolArgumentsError(
-            "The language model generated invalid knowledge-search arguments."
+    except ValueError as exc:
+        raise AssistantUnsupportedToolError(
+            f"Unsupported assistant tool: {tool_call.name}."
         ) from exc
 
-    return await execute_knowledge_search_tool(
-        tool_input,
-        context=context,
+    if property_tool not in enabled_tools:
+        raise AssistantUnsupportedToolError(
+            "The requested assistant tool is disabled for this property."
+        )
+
+    if property_tool == PropertyToolName.KNOWLEDGE_SEARCH:
+        try:
+            tool_input = KnowledgeSearchToolInput.model_validate_json(tool_call.arguments)
+
+        except ValidationError as exc:
+            raise AssistantToolArgumentsError(
+                "The language model generated invalid knowledge-search arguments."
+            ) from exc
+
+        return await execute_knowledge_search_tool(
+            tool_input,
+            context=context,
+        )
+
+    if property_tool == PropertyToolName.ROOM_AVAILABILITY:
+        try:
+            room_input = RoomAvailabilityToolInput.model_validate_json(tool_call.arguments)
+
+        except ValidationError as exc:
+            raise AssistantToolArgumentsError(
+                "The language model generated invalid room-availability arguments."
+            ) from exc
+
+        try:
+            return await execute_room_availability_tool(
+                room_input,
+                context=context,
+            )
+
+        except RoomValidationError as exc:
+            raise AssistantToolArgumentsError(str(exc)) from exc
+
+    raise AssistantUnsupportedToolError(f"Unsupported assistant tool: {tool_call.name}.")
+
+
+def get_tool_trace_details(
+    result: (KnowledgeSearchToolResult | RoomAvailabilityToolResult),
+) -> tuple[str, int]:
+    """
+    Map different tool results to the existing
+    generic trace structure.
+    """
+
+    if isinstance(
+        result,
+        KnowledgeSearchToolResult,
+    ):
+        return (
+            KNOWLEDGE_SEARCH_TOOL_LABEL,
+            result.returned_count,
+        )
+
+    return (
+        ROOM_AVAILABILITY_TOOL_LABEL,
+        len(result.options),
     )
 
 
@@ -172,13 +272,18 @@ async def run_hotel_assistant(
     context: AssistantToolContext,
 ) -> HotelAssistantResult:
     """
-    Run one Hotel Assistant request through a bounded tool-calling loop.
+    Run one property-aware bounded tool loop.
 
-    Each iteration asks the model either to:
-    - produce a final text response; or
-    - request the knowledge_search tool.
+    Flow:
 
-    Tool outputs are appended to the conversation and sent back to the model.
+        user
+        -> enabled property capabilities
+        -> LLM
+        -> tool
+        -> backend service
+        -> tool result
+        -> LLM
+        -> final answer
     """
 
     settings = get_settings()
@@ -188,10 +293,14 @@ async def run_hotel_assistant(
         max_length=(settings.assistant_max_message_length),
     )
 
+    enabled_tools = await get_enabled_assistant_tools(context)
+
+    tool_definitions = build_assistant_tool_definitions(enabled_tools)
+
     messages: list[AssistantMessage] = [
         {
             "role": "system",
-            "content": HOTEL_ASSISTANT_INSTRUCTIONS,
+            "content": (HOTEL_ASSISTANT_INSTRUCTIONS),
         },
         {
             "role": "user",
@@ -200,13 +309,18 @@ async def run_hotel_assistant(
     ]
 
     sources: list[AssistantSource] = []
+
     tool_traces: list[AssistantToolTrace] = []
+
     model_request_ids: list[str] = []
 
     completed_tool_rounds = 0
 
     while True:
-        model_turn: AssistantModelTurn = await generate_assistant_turn(messages)
+        model_turn: AssistantModelTurn = await generate_assistant_turn(
+            messages,
+            tool_definitions=(tool_definitions),
+        )
 
         if model_turn.request_id is not None:
             model_request_ids.append(model_turn.request_id)
@@ -223,7 +337,7 @@ async def run_hotel_assistant(
                 answer=model_turn.text,
                 sources=sources,
                 tool_calls=tool_traces,
-                model_request_ids=model_request_ids,
+                model_request_ids=(model_request_ids),
             )
 
         if completed_tool_rounds >= settings.assistant_max_tool_rounds:
@@ -237,25 +351,35 @@ async def run_hotel_assistant(
             tool_result = await execute_requested_tool(
                 tool_call,
                 context=context,
+                enabled_tools=(enabled_tools),
             )
 
-            sources = collect_knowledge_sources(
+            if isinstance(
                 tool_result,
-                existing_sources=sources,
-            )
+                KnowledgeSearchToolResult,
+            ):
+                sources = collect_knowledge_sources(
+                    tool_result,
+                    existing_sources=(sources),
+                )
+
+            (
+                tool_label,
+                returned_count,
+            ) = get_tool_trace_details(tool_result)
 
             tool_traces.append(
                 AssistantToolTrace(
-                    call_id=tool_call.call_id,
-                    name=KNOWLEDGE_SEARCH_TOOL_LABEL,
-                    returned_count=(tool_result.returned_count),
+                    call_id=(tool_call.call_id),
+                    name=tool_label,
+                    returned_count=(returned_count),
                 )
             )
 
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tool_call.call_id,
+                    "tool_call_id": (tool_call.call_id),
                     "content": (tool_result.model_dump_json()),
                 }
             )

@@ -686,9 +686,14 @@ async def search_room_availability(
     organization_id: UUID,
     property_id: UUID,
     request: RoomAvailabilityRequest,
+    room_type_id: UUID | None = None,
 ) -> RoomAvailabilityResponse:
     """
     Calculate current availability.
+
+    room_type_id is optional:
+    - None -> search all active room types
+    - UUID -> search only that room type
 
     We do NOT store available_rooms in the database.
 
@@ -697,11 +702,8 @@ async def search_room_availability(
         - overlapping confirmed booking quantities
     """
 
-    nights = validate_stay(
-        request,
-    )
+    nights = validate_stay(request)
 
-    # Calculate occupied inventory per room type.
     booked_inventory = (
         select(
             RoomBooking.room_type_id.label("room_type_id"),
@@ -711,16 +713,10 @@ async def search_room_availability(
             RoomBooking.organization_id == organization_id,
             RoomBooking.property_id == property_id,
             RoomBooking.status == RoomBookingStatus.CONFIRMED,
-            # Two stays overlap when:
-            #
-            # existing check-in < requested checkout
-            # existing checkout > requested check-in
             RoomBooking.check_in < request.check_out,
             RoomBooking.check_out > request.check_in,
         )
-        .group_by(
-            RoomBooking.room_type_id,
-        )
+        .group_by(RoomBooking.room_type_id)
         .subquery()
     )
 
@@ -741,17 +737,17 @@ async def search_room_availability(
             RoomType.property_id == property_id,
             RoomType.is_active.is_(True),
         )
-        .order_by(
-            RoomType.nightly_rate,
-            RoomType.name,
-        )
     )
 
-    rows = (
-        await session.execute(
-            statement,
-        )
-    ).all()
+    if room_type_id is not None:
+        statement = statement.where(RoomType.id == room_type_id)
+
+    statement = statement.order_by(
+        RoomType.nightly_rate,
+        RoomType.name,
+    )
+
+    rows = (await session.execute(statement)).all()
 
     options: list[RoomAvailabilityOption] = []
 
@@ -775,8 +771,8 @@ async def search_room_availability(
                 room_type_id=room_type.id,
                 code=room_type.code,
                 name=room_type.name,
-                available_rooms=available_rooms,
-                nightly_rate=room_type.nightly_rate,
+                available_rooms=(available_rooms),
+                nightly_rate=(room_type.nightly_rate),
                 currency=room_type.currency,
             )
         )
