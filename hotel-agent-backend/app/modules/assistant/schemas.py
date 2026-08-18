@@ -23,10 +23,7 @@ class AssistantChatRequest(BaseModel):
     )
 
     message: str = Field(
-        description=(
-            "Question or request submitted "
-            "to the Hotel Assistant."
-        ),
+        description=("Question or request submitted to the Hotel Assistant."),
         examples=[
             "Book a Deluxe room.",
         ],
@@ -34,10 +31,7 @@ class AssistantChatRequest(BaseModel):
 
     session_id: UUID | None = Field(
         default=None,
-        description=(
-            "Existing assistant conversation ID. "
-            "Omit it for the first message."
-        ),
+        description=("Existing assistant conversation ID. Omit it for the first message."),
     )
 
 
@@ -72,14 +66,10 @@ class AssistantChatResponse(BaseModel):
 
     answer: str
 
-    sources: list[
-        AssistantSourceResponse
-    ] = Field(
+    sources: list[AssistantSourceResponse] = Field(
         default_factory=list,
     )
 
-    tool_calls: list[
-        AssistantToolCallResponse
-    ] = Field(
+    tool_calls: list[AssistantToolCallResponse] = Field(
         default_factory=list,
     )

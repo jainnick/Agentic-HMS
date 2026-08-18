@@ -57,17 +57,12 @@ from app.modules.tenancy.service import (
     require_property_management_access,
 )
 
-
-logger = structlog.get_logger(
-    __name__
-)
+logger = structlog.get_logger(__name__)
 
 
 router = APIRouter(
     prefix="/admin/assistant",
-    tags=[
-        "Assistant Admin"
-    ],
+    tags=["Assistant Admin"],
 )
 
 
@@ -79,35 +74,21 @@ def require_selected_management_property(
     property-management permission.
     """
 
-    property_id = (
-        tenant_context.property_id
-    )
+    property_id = tenant_context.property_id
 
     if property_id is None:
         raise HTTPException(
-            status_code=(
-                status.HTTP_400_BAD_REQUEST
-            ),
-            detail=(
-                "A property must be selected "
-                "using the X-Property-ID header."
-            ),
+            status_code=(status.HTTP_400_BAD_REQUEST),
+            detail=("A property must be selected using the X-Property-ID header."),
         )
 
     try:
-        require_property_management_access(
-            tenant_context
-        )
+        require_property_management_access(tenant_context)
 
     except TenantAccessDeniedError as exc:
         raise HTTPException(
-            status_code=(
-                status.HTTP_403_FORBIDDEN
-            ),
-            detail=(
-                "Property management access "
-                "is required."
-            ),
+            status_code=(status.HTTP_403_FORBIDDEN),
+            detail=("Property management access is required."),
         ) from exc
 
     return property_id
@@ -115,49 +96,30 @@ def require_selected_management_property(
 
 @router.post(
     "/chat-test",
-    response_model=(
-        AssistantChatResponse
-    ),
-    status_code=(
-        status.HTTP_200_OK
-    ),
+    response_model=(AssistantChatResponse),
+    status_code=(status.HTTP_200_OK),
 )
 async def chat_with_hotel_assistant_test(
     request: AssistantChatRequest,
-    tenant_context: (
-        TenantContextDependency
-    ),
+    tenant_context: (TenantContextDependency),
     session: DatabaseSessionDependency,
 ) -> AssistantChatResponse:
     """
     Test one stateful property-specific assistant.
     """
 
-    property_id = (
-        require_selected_management_property(
-            tenant_context
-        )
-    )
+    property_id = require_selected_management_property(tenant_context)
 
     try:
-        tool_context = (
-            AssistantToolContext
-            .from_tenant_context(
-                session=session,
-                tenant_context=(
-                    tenant_context
-                ),
-            )
+        tool_context = AssistantToolContext.from_tenant_context(
+            session=session,
+            tenant_context=(tenant_context),
         )
 
-        result = (
-            await run_hotel_assistant(
-                message=request.message,
-                context=tool_context,
-                session_id=(
-                    request.session_id
-                ),
-            )
+        result = await run_hotel_assistant(
+            message=request.message,
+            context=tool_context,
+            session_id=(request.session_id),
         )
 
     except (
@@ -166,70 +128,38 @@ async def chat_with_hotel_assistant_test(
         AssistantSessionNotFoundError,
     ) as exc:
         raise HTTPException(
-            status_code=(
-                status.HTTP_400_BAD_REQUEST
-            ),
+            status_code=(status.HTTP_400_BAD_REQUEST),
             detail=str(exc),
         ) from exc
 
     except AssistantLlmRateLimitError as exc:
         raise HTTPException(
-            status_code=(
-                status
-                .HTTP_429_TOO_MANY_REQUESTS
-            ),
-            detail=(
-                "The Hotel Assistant is "
-                "temporarily busy. "
-                "Please retry shortly."
-            ),
+            status_code=(status.HTTP_429_TOO_MANY_REQUESTS),
+            detail=("The Hotel Assistant is temporarily busy. Please retry shortly."),
         ) from exc
 
     except AssistantLlmConfigurationError as exc:
         raise HTTPException(
-            status_code=(
-                status
-                .HTTP_503_SERVICE_UNAVAILABLE
-            ),
-            detail=(
-                "The Hotel Assistant "
-                "is not configured."
-            ),
+            status_code=(status.HTTP_503_SERVICE_UNAVAILABLE),
+            detail=("The Hotel Assistant is not configured."),
         ) from exc
 
     except EmbeddingError as exc:
         raise HTTPException(
-            status_code=(
-                status
-                .HTTP_503_SERVICE_UNAVAILABLE
-            ),
-            detail=(
-                "The knowledge-search service "
-                "is temporarily unavailable."
-            ),
+            status_code=(status.HTTP_503_SERVICE_UNAVAILABLE),
+            detail=("The knowledge-search service is temporarily unavailable."),
         ) from exc
 
     except KnowledgeRepositoryError as exc:
         raise HTTPException(
-            status_code=(
-                status
-                .HTTP_500_INTERNAL_SERVER_ERROR
-            ),
-            detail=(
-                "Knowledge retrieval could "
-                "not be completed."
-            ),
+            status_code=(status.HTTP_500_INTERNAL_SERVER_ERROR),
+            detail=("Knowledge retrieval could not be completed."),
         ) from exc
 
     except AssistantLlmRequestError as exc:
         raise HTTPException(
-            status_code=(
-                status.HTTP_502_BAD_GATEWAY
-            ),
-            detail=(
-                "The language-model provider "
-                "could not complete the request."
-            ),
+            status_code=(status.HTTP_502_BAD_GATEWAY),
+            detail=("The language-model provider could not complete the request."),
         ) from exc
 
     except (
@@ -241,40 +171,19 @@ async def chat_with_hotel_assistant_test(
         KnowledgeSearchValidationError,
     ) as exc:
         raise HTTPException(
-            status_code=(
-                status.HTTP_502_BAD_GATEWAY
-            ),
-            detail=(
-                "The Hotel Assistant returned "
-                "an unusable response."
-            ),
+            status_code=(status.HTTP_502_BAD_GATEWAY),
+            detail=("The Hotel Assistant returned an unusable response."),
         ) from exc
 
     logger.info(
         "hotel_assistant_request_completed",
-        organization_id=str(
-            tenant_context.organization_id
-        ),
-        property_id=str(
-            property_id
-        ),
-        assistant_session_id=str(
-            result.session_id
-        ),
-        source_count=len(
-            result.sources
-        ),
-        tool_call_count=len(
-            result.tool_calls
-        ),
-        tool_names=[
-            tool_call.name
-            for tool_call
-            in result.tool_calls
-        ],
-        model_request_ids=(
-            result.model_request_ids
-        ),
+        organization_id=str(tenant_context.organization_id),
+        property_id=str(property_id),
+        assistant_session_id=str(result.session_id),
+        source_count=len(result.sources),
+        tool_call_count=len(result.tool_calls),
+        tool_names=[tool_call.name for tool_call in result.tool_calls],
+        model_request_ids=(result.model_request_ids),
     )
 
     return AssistantChatResponse(
@@ -282,25 +191,17 @@ async def chat_with_hotel_assistant_test(
         answer=result.answer,
         sources=[
             AssistantSourceResponse(
-                document_title=(
-                    source.document_title
-                ),
-                page_number=(
-                    source.page_number
-                ),
+                document_title=(source.document_title),
+                page_number=(source.page_number),
                 heading=source.heading,
             )
-            for source
-            in result.sources
+            for source in result.sources
         ],
         tool_calls=[
             AssistantToolCallResponse(
                 name=tool_call.name,
-                returned_count=(
-                    tool_call.returned_count
-                ),
+                returned_count=(tool_call.returned_count),
             )
-            for tool_call
-            in result.tool_calls
+            for tool_call in result.tool_calls
         ],
     )

@@ -20,7 +20,6 @@ from app.modules.tenancy.models import (
     PropertyMembership,
 )
 
-
 __all__ = [
     "AssistantSession",
     "Base",

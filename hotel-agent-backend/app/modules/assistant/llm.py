@@ -27,10 +27,7 @@ from app.modules.property_tools import (
     PropertyToolName,
 )
 
-
-logger = structlog.get_logger(
-    __name__
-)
+logger = structlog.get_logger(__name__)
 
 
 AssistantMessage = dict[
@@ -43,27 +40,19 @@ class AssistantLlmError(Exception):
     """Base assistant LLM error."""
 
 
-class AssistantLlmConfigurationError(
-    AssistantLlmError
-):
+class AssistantLlmConfigurationError(AssistantLlmError):
     """LLM is not configured."""
 
 
-class AssistantLlmRequestError(
-    AssistantLlmError
-):
+class AssistantLlmRequestError(AssistantLlmError):
     """LLM request failed."""
 
 
-class AssistantLlmRateLimitError(
-    AssistantLlmRequestError
-):
+class AssistantLlmRateLimitError(AssistantLlmRequestError):
     """LLM provider rate limit."""
 
 
-class AssistantLlmResponseError(
-    AssistantLlmError
-):
+class AssistantLlmResponseError(AssistantLlmError):
     """LLM returned an unusable response."""
 
 
@@ -92,13 +81,9 @@ class AssistantModelTurn:
 
     text: str | None
 
-    tool_calls: list[
-        AssistantFunctionCall
-    ]
+    tool_calls: list[AssistantFunctionCall]
 
-    assistant_message: (
-        AssistantMessage
-    )
+    assistant_message: AssistantMessage
 
     request_id: str | None
 
@@ -120,21 +105,15 @@ def build_function_tool_definition(
         "function": {
             "name": name,
             "description": description,
-            "parameters": (
-                input_model
-                .model_json_schema()
-            ),
+            "parameters": (input_model.model_json_schema()),
             "strict": False,
         },
     }
 
 
-def build_knowledge_search_tool_definition(
-) -> dict[str, Any]:
+def build_knowledge_search_tool_definition() -> dict[str, Any]:
     return build_function_tool_definition(
-        name=(
-            KNOWLEDGE_SEARCH_TOOL_NAME
-        ),
+        name=(KNOWLEDGE_SEARCH_TOOL_NAME),
         description=(
             "Search this hotel's active knowledge "
             "documents for property-specific "
@@ -145,18 +124,13 @@ def build_knowledge_search_tool_definition(
             "information relevant to the guest's "
             "actual question."
         ),
-        input_model=(
-            KnowledgeSearchToolInput
-        ),
+        input_model=(KnowledgeSearchToolInput),
     )
 
 
-def build_room_availability_tool_definition(
-) -> dict[str, Any]:
+def build_room_availability_tool_definition() -> dict[str, Any]:
     return build_function_tool_definition(
-        name=(
-            ROOM_AVAILABILITY_TOOL_NAME
-        ),
+        name=(ROOM_AVAILABILITY_TOOL_NAME),
         description=(
             "Check live room availability and "
             "current rates for specified check-in "
@@ -167,14 +141,11 @@ def build_room_availability_tool_definition(
             "specific or partial room names, guest "
             "capacity, inventory and current rates."
         ),
-        input_model=(
-            RoomAvailabilityToolInput
-        ),
+        input_model=(RoomAvailabilityToolInput),
     )
 
 
-def build_room_booking_tool_definition(
-) -> dict[str, Any]:
+def build_room_booking_tool_definition() -> dict[str, Any]:
     return build_function_tool_definition(
         name=ROOM_BOOKING_TOOL_NAME,
         description=(
@@ -190,449 +161,331 @@ def build_room_booking_tool_definition(
             "backend already stores the pending "
             "booking."
         ),
-        input_model=(
-            RoomBookingToolInput
-        ),
+        input_model=(RoomBookingToolInput),
     )
 
 
 def build_assistant_tool_definitions(
-    enabled_tools: set[
-        PropertyToolName
-    ],
+    enabled_tools: set[PropertyToolName],
 ) -> list[dict[str, Any]]:
     """
     Expose only capabilities enabled for this property.
     """
 
-    definitions: list[
-        dict[str, Any]
-    ] = []
+    definitions: list[dict[str, Any]] = []
 
-    if (
-        PropertyToolName.KNOWLEDGE_SEARCH
-        in enabled_tools
-    ):
-        definitions.append(
-            build_knowledge_search_tool_definition()
-        )
+    if PropertyToolName.KNOWLEDGE_SEARCH in enabled_tools:
+        definitions.append(build_knowledge_search_tool_definition())
 
-    if (
-        PropertyToolName.ROOM_AVAILABILITY
-        in enabled_tools
-    ):
-        definitions.append(
-            build_room_availability_tool_definition()
-        )
+    if PropertyToolName.ROOM_AVAILABILITY in enabled_tools:
+        definitions.append(build_room_availability_tool_definition())
 
-    if (
-        PropertyToolName.ROOM_BOOKING
-        in enabled_tools
-    ):
-        definitions.append(
-            build_room_booking_tool_definition()
-        )
+    if PropertyToolName.ROOM_BOOKING in enabled_tools:
+        definitions.append(build_room_booking_tool_definition())
 
     return definitions
 
 
-@lru_cache(maxsize=1)
-def get_llm_client() -> AsyncOpenAI:
+@dataclass(frozen=True, slots=True)
+class LlmTarget:
     """
-    Create and cache the OpenAI-compatible client.
+    One configured OpenAI-compatible LLM endpoint.
+
+    provider is used only for logging/diagnostics.
+    API keys are never logged.
+    """
+
+    provider: str
+    model: str
+    client: AsyncOpenAI
+
+
+@lru_cache(maxsize=1)
+def get_llm_targets() -> tuple[LlmTarget, ...]:
+    """
+    Build the ordered LLM failover chain.
+
+    Order:
+
+    1. Groq
+    2. NVIDIA NIM
+
+    The assistant always tries Groq first. NVIDIA is used only when
+    the Groq request fails with a retryable provider-side failure.
     """
 
     settings = get_settings()
 
-    if settings.llm_api_key is None:
-        raise AssistantLlmConfigurationError(
-            "LLM_API_KEY is not configured."
+    targets: list[LlmTarget] = []
+
+    # Primary: Groq
+    if settings.llm_api_key is not None:
+        if settings.llm_model is None or not settings.llm_model.strip():
+            raise AssistantLlmConfigurationError("LLM_MODEL is not configured.")
+
+        groq_options: dict[str, Any] = {
+            "api_key": settings.llm_api_key.get_secret_value(),
+            "timeout": settings.llm_timeout_seconds,
+        }
+
+        if settings.llm_base_url is not None and settings.llm_base_url.strip():
+            groq_options["base_url"] = settings.llm_base_url.strip()
+
+        targets.append(
+            LlmTarget(
+                provider="groq",
+                model=settings.llm_model.strip(),
+                client=AsyncOpenAI(
+                    **groq_options,
+                ),
+            )
         )
 
-    if (
-        settings.llm_model is None
-        or not settings.llm_model.strip()
-    ):
-        raise AssistantLlmConfigurationError(
-            "LLM_MODEL is not configured."
+    # Fallback: NVIDIA
+    if settings.nvidia_api_key is not None:
+        if not settings.nvidia_model.strip():
+            raise AssistantLlmConfigurationError("NVIDIA_MODEL is not configured.")
+
+        targets.append(
+            LlmTarget(
+                provider="nvidia",
+                model=settings.nvidia_model.strip(),
+                client=AsyncOpenAI(
+                    api_key=settings.nvidia_api_key.get_secret_value(),
+                    base_url=settings.nvidia_base_url.strip(),
+                    timeout=settings.llm_timeout_seconds,
+                ),
+            )
         )
 
-    client_options: dict[
-        str,
-        Any,
-    ] = {
-        "api_key": (
-            settings.llm_api_key
-            .get_secret_value()
-        ),
-        "timeout": (
-            settings
-            .llm_timeout_seconds
-        ),
+    if not targets:
+        raise AssistantLlmConfigurationError("No LLM provider is configured.")
+
+    return tuple(targets)
+
+
+async def create_llm_completion(
+    *,
+    target: LlmTarget,
+    messages: list[AssistantMessage],
+    tool_definitions: list[dict[str, Any]],
+) -> Any:
+    """
+    Make one provider-specific chat-completion request.
+
+    Both Groq and NVIDIA expose OpenAI-compatible
+    chat-completion APIs.
+
+    The property-specific tool definitions are passed
+    through unchanged so both providers see exactly the
+    same enabled hotel capabilities.
+    """
+
+    settings = get_settings()
+
+    request_options: dict[str, Any] = {
+        "model": target.model,
+        "messages": messages,
     }
 
-    if (
-        settings.llm_base_url
-        is not None
-        and settings.llm_base_url.strip()
-    ):
-        client_options["base_url"] = (
-            settings
-            .llm_base_url
-            .strip()
-        )
+    if tool_definitions:
+        request_options["tools"] = tool_definitions
+        request_options["tool_choice"] = "auto"
 
-    return AsyncOpenAI(
-        **client_options
+    if target.provider == "nvidia":
+        request_options["max_tokens"] = settings.llm_max_output_tokens
+    else:
+        request_options["max_completion_tokens"] = settings.llm_max_output_tokens
+
+    return await target.client.chat.completions.create(
+        **cast(
+            Any,
+            request_options,
+        )
     )
 
 
 def build_assistant_message(
     *,
     content: str | None,
-    tool_calls: list[
-        AssistantFunctionCall
-    ],
+    tool_calls: list[AssistantFunctionCall],
 ) -> AssistantMessage:
     """
     Rebuild provider-compatible assistant message.
     """
 
-    assistant_message: (
-        AssistantMessage
-    ) = {
+    assistant_message: AssistantMessage = {
         "role": "assistant",
     }
 
     if content is not None:
-        assistant_message[
-            "content"
-        ] = content
+        assistant_message["content"] = content
 
     if tool_calls:
-        assistant_message[
-            "tool_calls"
-        ] = [
+        assistant_message["tool_calls"] = [
             {
-                "id": (
-                    tool_call.call_id
-                ),
+                "id": (tool_call.call_id),
                 "type": "function",
                 "function": {
-                    "name": (
-                        tool_call.name
-                    ),
-                    "arguments": (
-                        tool_call.arguments
-                    ),
+                    "name": (tool_call.name),
+                    "arguments": (tool_call.arguments),
                 },
             }
-            for tool_call
-            in tool_calls
+            for tool_call in tool_calls
         ]
 
     return assistant_message
 
 
 async def generate_assistant_turn(
-    messages: list[
-        AssistantMessage
-    ],
+    messages: list[AssistantMessage],
     *,
-    tool_definitions: list[
-        dict[str, Any]
-    ],
+    tool_definitions: list[dict[str, Any]],
 ) -> AssistantModelTurn:
     """
-    Send one turn to the configured LLM.
+    Generate one assistant turn using ordered provider failover.
 
-    Groq validates generated function calls before
-    returning them to us. Occasionally a model may
-    generate malformed tool-call syntax even though
-    the intended tool arguments are correct.
+    Order:
+    1. Groq
+    2. NVIDIA NIM
 
-    For Groq's specific `tool_use_failed` 400 error,
-    retry the model generation once.
+    Fail over only for provider/infrastructure failures:
+    - 429 rate limit / quota exhaustion
+    - timeout
+    - connection failure
+    - 5xx provider errors
 
-    We do NOT retry arbitrary 400 responses.
+    Request/configuration failures such as 400, 401 and
+    403 are not silently sent to another provider.
     """
 
-    settings = get_settings()
+    targets = get_llm_targets()
 
-    if (
-        settings.llm_model is None
-        or not settings.llm_model.strip()
-    ):
-        raise AssistantLlmConfigurationError(
-            "LLM_MODEL is not configured."
-        )
+    completion: Any | None = None
 
-    client = get_llm_client()
+    for target_index, target in enumerate(targets):
+        has_fallback = target_index < len(targets) - 1
 
-    request_options: dict[
-        str,
-        Any,
-    ] = {
-        "model": (
-            settings
-            .llm_model
-            .strip()
-        ),
-        "messages": cast(
-            Any,
-            messages,
-        ),
-        "max_completion_tokens": (
-            settings
-            .llm_max_output_tokens
-        ),
-
-        # Hotel operations benefit from deterministic
-        # structured tool generation rather than
-        # creative sampling.
-        "temperature": 0,
-    }
-
-    if tool_definitions:
-        request_options[
-            "tools"
-        ] = cast(
-            Any,
-            tool_definitions,
-        )
-
-        request_options[
-            "tool_choice"
-        ] = "auto"
-
-    completion = None
-
-    # One normal attempt + one targeted retry.
-    for attempt in range(2):
         try:
-            completion = (
-                await client
-                .chat
-                .completions
-                .create(
-                    **request_options
-                )
+            completion = await create_llm_completion(
+                target=target,
+                messages=messages,
+                tool_definitions=(tool_definitions),
+            )
+
+            logger.info(
+                "assistant_llm_request_succeeded",
+                provider=target.provider,
+                model=target.model,
             )
 
             break
 
+        except openai.RateLimitError as exc:
+            logger.warning(
+                "assistant_llm_rate_limited",
+                provider=target.provider,
+                model=target.model,
+                fallback_available=(has_fallback),
+            )
+
+            if has_fallback:
+                continue
+
+            raise AssistantLlmRateLimitError(
+                "The Hotel Assistant is temporarily busy. Please retry shortly."
+            ) from exc
+
         except openai.APITimeoutError as exc:
             logger.warning(
                 "assistant_llm_timeout",
-                model=settings.llm_model,
+                provider=target.provider,
+                model=target.model,
+                fallback_available=(has_fallback),
             )
 
-            raise AssistantLlmRequestError(
-                "The language-model request "
-                "timed out."
-            ) from exc
+            if has_fallback:
+                continue
+
+            raise AssistantLlmRequestError("The language-model request timed out.") from exc
 
         except openai.APIConnectionError as exc:
             logger.warning(
                 "assistant_llm_connection_error",
-                model=settings.llm_model,
-                error_type=(
-                    type(exc).__name__
-                ),
+                provider=target.provider,
+                model=target.model,
+                fallback_available=(has_fallback),
             )
 
-            raise AssistantLlmRequestError(
-                "The language-model provider "
-                "could not be reached."
-            ) from exc
-
-        except openai.RateLimitError as exc:
-            raise AssistantLlmRateLimitError(
-                "The Hotel Assistant is "
-                "temporarily busy. "
-                "Please retry shortly."
-            ) from exc
-
-        except openai.BadRequestError as exc:
-            error_body = (
-                exc.body
-                if isinstance(
-                    exc.body,
-                    dict,
-                )
-                else {}
-            )
-
-            error_details = (
-                error_body.get(
-                    "error",
-                    {}
-                )
-                if isinstance(
-                    error_body,
-                    dict,
-                )
-                else {}
-            )
-
-            error_code = (
-                error_details.get(
-                    "code"
-                )
-                if isinstance(
-                    error_details,
-                    dict,
-                )
-                else None
-            )
-
-            # Groq validates generated tool calls.
-            #
-            # A tool_use_failed response means the
-            # model intended to call a tool but did
-            # not produce provider-valid tool syntax.
-            #
-            # Retry exactly once because another
-            # deterministic generation commonly
-            # resolves this model-formatting failure.
-            if (
-                error_code
-                == "tool_use_failed"
-                and attempt == 0
-            ):
-                logger.warning(
-                    "assistant_llm_tool_use_retry",
-                    model=(
-                        settings.llm_model
-                    ),
-                    request_id=getattr(
-                        exc,
-                        "request_id",
-                        None,
-                    ),
-                )
-
+            if has_fallback:
                 continue
 
-            logger.warning(
-                "assistant_llm_bad_request",
-                status_code=(
-                    exc.status_code
-                ),
-                request_id=getattr(
-                    exc,
-                    "request_id",
-                    None,
-                ),
-                error_code=error_code,
-                model=(
-                    settings.llm_model
-                ),
-            )
-
             raise AssistantLlmRequestError(
-                "The language-model provider "
-                "rejected the request."
+                "The language-model provider could not be reached."
             ) from exc
 
         except openai.APIStatusError as exc:
             logger.warning(
                 "assistant_llm_status_error",
-                status_code=(
-                    exc.status_code
-                ),
+                provider=target.provider,
+                model=target.model,
+                status_code=(exc.status_code),
                 request_id=getattr(
                     exc,
                     "request_id",
                     None,
                 ),
-                model=(
-                    settings.llm_model
-                ),
+                fallback_available=(has_fallback),
             )
 
+            if exc.status_code >= 500 and has_fallback:
+                continue
+
             raise AssistantLlmRequestError(
-                "The language-model provider "
-                "rejected the request."
+                "The language-model provider rejected the request."
             ) from exc
 
         except openai.OpenAIError as exc:
-            raise AssistantLlmRequestError(
-                "The language-model request "
-                "failed."
-            ) from exc
+            raise AssistantLlmRequestError("The language-model request failed.") from exc
 
     if completion is None:
-        raise AssistantLlmRequestError(
-            "The language-model provider "
-            "could not generate a valid tool call."
-        )
+        raise AssistantLlmRequestError("No language-model provider completed the request.")
 
     if not completion.choices:
-        raise AssistantLlmResponseError(
-            "The language model returned "
-            "no completion choices."
-        )
+        raise AssistantLlmResponseError("The language model returned no completion choices.")
 
-    message = (
-        completion
-        .choices[0]
-        .message
-    )
+    message = completion.choices[0].message
 
     text: str | None = None
 
     if message.content is not None:
-        normalized_text = (
-            message
-            .content
-            .strip()
-        )
+        normalized_text = message.content.strip()
 
         if normalized_text:
             text = normalized_text
 
-    normalized_tool_calls: list[
-        AssistantFunctionCall
-    ] = []
+    normalized_tool_calls: list[AssistantFunctionCall] = []
 
-    for tool_call in (
-        message.tool_calls or []
-    ):
+    for tool_call in message.tool_calls or []:
         if not isinstance(
             tool_call,
             ChatCompletionMessageFunctionToolCall,
         ):
             raise AssistantLlmResponseError(
-                "The language model returned "
-                "an unsupported custom tool call."
+                "The language model returned an unsupported custom tool call."
             )
 
         normalized_tool_calls.append(
             AssistantFunctionCall(
-                call_id=(
-                    tool_call.id
-                ),
-                name=(
-                    tool_call
-                    .function
-                    .name
-                ),
-                arguments=(
-                    tool_call
-                    .function
-                    .arguments
-                ),
+                call_id=tool_call.id,
+                name=(tool_call.function.name),
+                arguments=(tool_call.function.arguments),
             )
         )
 
-    assistant_message = (
-        build_assistant_message(
-            content=message.content,
-            tool_calls=(
-                normalized_tool_calls
-            ),
-        )
+    assistant_message = build_assistant_message(
+        content=message.content,
+        tool_calls=(normalized_tool_calls),
     )
 
     request_id_value = getattr(
@@ -652,11 +505,7 @@ async def generate_assistant_turn(
 
     return AssistantModelTurn(
         text=text,
-        tool_calls=(
-            normalized_tool_calls
-        ),
-        assistant_message=(
-            assistant_message
-        ),
+        tool_calls=(normalized_tool_calls),
+        assistant_message=(assistant_message),
         request_id=request_id,
     )

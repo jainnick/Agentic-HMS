@@ -38,22 +38,13 @@ from app.modules.rooms import (
     validate_stay,
 )
 
+ROOM_AVAILABILITY_TOOL_NAME = "room_availability"
 
-ROOM_AVAILABILITY_TOOL_NAME = (
-    "room_availability"
-)
+ROOM_AVAILABILITY_TOOL_LABEL = "room.availability"
 
-ROOM_AVAILABILITY_TOOL_LABEL = (
-    "room.availability"
-)
+ROOM_BOOKING_TOOL_NAME = "room_booking"
 
-ROOM_BOOKING_TOOL_NAME = (
-    "room_booking"
-)
-
-ROOM_BOOKING_TOOL_LABEL = (
-    "room.booking"
-)
+ROOM_BOOKING_TOOL_LABEL = "room.booking"
 
 
 # ---------------------------------------------------------------------------
@@ -61,9 +52,7 @@ ROOM_BOOKING_TOOL_LABEL = (
 # ---------------------------------------------------------------------------
 
 
-class RoomAvailabilityToolInput(
-    RoomAvailabilityRequest
-):
+class RoomAvailabilityToolInput(RoomAvailabilityRequest):
     """
     Arguments the LLM may provide for live availability.
 
@@ -79,9 +68,7 @@ class RoomAvailabilityToolInput(
         default=1,
         ge=1,
         le=20,
-        description=(
-            "Number of adults staying."
-        ),
+        description=("Number of adults staying."),
     )
 
     room_type: str | None = Field(
@@ -102,24 +89,18 @@ class RoomAvailabilityToolInput(
     )
 
 
-class RoomAvailabilityToolResult(
-    RoomAvailabilityResponse
-):
+class RoomAvailabilityToolResult(RoomAvailabilityResponse):
     """
     Operational availability result sent to the LLM.
     """
 
-    requested_room_type: (
-        str | None
-    ) = None
+    requested_room_type: str | None = None
 
     room_type_found: bool = True
 
     room_type_ambiguous: bool = False
 
-    matching_room_types: list[
-        str
-    ] = Field(
+    matching_room_types: list[str] = Field(
         default_factory=list,
     )
 
@@ -137,41 +118,23 @@ async def find_room_type_matches(
     2. partial room-name match
     """
 
-    normalized = (
-        room_type.strip().lower()
-    )
+    normalized = room_type.strip().lower()
 
     exact_statement = (
         select(RoomType)
         .where(
-            RoomType.organization_id
-            == context.organization_id,
-            RoomType.property_id
-            == context.property_id,
+            RoomType.organization_id == context.organization_id,
+            RoomType.property_id == context.property_id,
             RoomType.is_active.is_(True),
             or_(
-                func.lower(
-                    RoomType.name
-                )
-                == normalized,
-                func.lower(
-                    RoomType.code
-                )
-                == normalized,
+                func.lower(RoomType.name) == normalized,
+                func.lower(RoomType.code) == normalized,
             ),
         )
-        .order_by(
-            RoomType.name
-        )
+        .order_by(RoomType.name)
     )
 
-    exact_matches = list(
-        (
-            await context.session.scalars(
-                exact_statement
-            )
-        ).all()
-    )
+    exact_matches = list((await context.session.scalars(exact_statement)).all())
 
     if exact_matches:
         return exact_matches
@@ -179,29 +142,15 @@ async def find_room_type_matches(
     partial_statement = (
         select(RoomType)
         .where(
-            RoomType.organization_id
-            == context.organization_id,
-            RoomType.property_id
-            == context.property_id,
+            RoomType.organization_id == context.organization_id,
+            RoomType.property_id == context.property_id,
             RoomType.is_active.is_(True),
-            func.lower(
-                RoomType.name
-            ).like(
-                f"%{normalized}%"
-            ),
+            func.lower(RoomType.name).like(f"%{normalized}%"),
         )
-        .order_by(
-            RoomType.name
-        )
+        .order_by(RoomType.name)
     )
 
-    return list(
-        (
-            await context.session.scalars(
-                partial_statement
-            )
-        ).all()
-    )
+    return list((await context.session.scalars(partial_statement)).all())
 
 
 async def execute_room_availability_tool(
@@ -213,130 +162,83 @@ async def execute_room_availability_tool(
     Thin AI adapter over the existing PR6 availability service.
     """
 
-    request = (
-        RoomAvailabilityRequest.model_validate(
-            tool_input.model_dump(
-                exclude={
-                    "room_type",
-                }
-            )
+    request = RoomAvailabilityRequest.model_validate(
+        tool_input.model_dump(
+            exclude={
+                "room_type",
+            }
         )
     )
 
     if tool_input.room_type is None:
-        availability = (
-            await search_room_availability(
-                context.session,
-                organization_id=(
-                    context.organization_id
-                ),
-                property_id=(
-                    context.property_id
-                ),
-                request=request,
-            )
+        availability = await search_room_availability(
+            context.session,
+            organization_id=(context.organization_id),
+            property_id=(context.property_id),
+            request=request,
         )
 
         return RoomAvailabilityToolResult(
-            check_in=(
-                availability.check_in
-            ),
-            check_out=(
-                availability.check_out
-            ),
+            check_in=(availability.check_in),
+            check_out=(availability.check_out),
             nights=availability.nights,
-            requested_rooms=(
-                availability.requested_rooms
-            ),
+            requested_rooms=(availability.requested_rooms),
             options=availability.options,
         )
 
-    matches = (
-        await find_room_type_matches(
-            context=context,
-            room_type=(
-                tool_input.room_type
-            ),
-        )
+    matches = await find_room_type_matches(
+        context=context,
+        room_type=(tool_input.room_type),
     )
 
     if not matches:
-        nights = validate_stay(
-            request
-        )
+        nights = validate_stay(request)
 
         return RoomAvailabilityToolResult(
             check_in=request.check_in,
             check_out=request.check_out,
             nights=nights,
-            requested_rooms=(
-                request.rooms
-            ),
+            requested_rooms=(request.rooms),
             options=[],
-            requested_room_type=(
-                tool_input.room_type
-            ),
+            requested_room_type=(tool_input.room_type),
             room_type_found=False,
         )
 
     if len(matches) > 1:
-        nights = validate_stay(
-            request
-        )
+        nights = validate_stay(request)
 
         return RoomAvailabilityToolResult(
             check_in=request.check_in,
             check_out=request.check_out,
             nights=nights,
-            requested_rooms=(
-                request.rooms
-            ),
+            requested_rooms=(request.rooms),
             options=[],
-            requested_room_type=(
-                tool_input.room_type
-            ),
+            requested_room_type=(tool_input.room_type),
             room_type_found=True,
             room_type_ambiguous=True,
-            matching_room_types=[
-                match.name
-                for match in matches
-            ],
+            matching_room_types=[match.name for match in matches],
         )
 
     target_room_type = matches[0]
 
-    availability = (
-        await search_room_availability(
-            context.session,
-            organization_id=(
-                context.organization_id
-            ),
-            property_id=(
-                context.property_id
-            ),
-            request=request,
-            room_type_id=(
-                target_room_type.id
-            ),
-        )
+    availability = await search_room_availability(
+        context.session,
+        organization_id=(context.organization_id),
+        property_id=(context.property_id),
+        request=request,
+        room_type_id=(target_room_type.id),
     )
 
     return RoomAvailabilityToolResult(
         check_in=availability.check_in,
         check_out=availability.check_out,
         nights=availability.nights,
-        requested_rooms=(
-            availability.requested_rooms
-        ),
+        requested_rooms=(availability.requested_rooms),
         options=availability.options,
-        requested_room_type=(
-            tool_input.room_type
-        ),
+        requested_room_type=(tool_input.room_type),
         room_type_found=True,
         room_type_ambiguous=False,
-        matching_room_types=[
-            target_room_type.name
-        ],
+        matching_room_types=[target_room_type.name],
     )
 
 
@@ -365,9 +267,7 @@ class RoomBookingToolInput(BaseModel):
     confirm: bool = Field(
         default=False,
         description=(
-            "Set true only after the guest "
-            "explicitly confirms the previously "
-            "quoted booking."
+            "Set true only after the guest explicitly confirms the previously quoted booking."
         ),
     )
 
@@ -431,15 +331,11 @@ class RoomBookingToolResult(BaseModel):
         "confirmed",
     ]
 
-    missing_fields: list[
-        str
-    ] = Field(
+    missing_fields: list[str] = Field(
         default_factory=list,
     )
 
-    matching_room_types: list[
-        str
-    ] = Field(
+    matching_room_types: list[str] = Field(
         default_factory=list,
     )
 
@@ -474,9 +370,7 @@ def is_explicit_booking_confirmation(
     a write operation.
     """
 
-    normalized = " ".join(
-        message.lower().strip().split()
-    )
+    normalized = " ".join(message.lower().strip().split())
 
     normalized = re.sub(
         r"[.!?,]+$",
@@ -503,10 +397,7 @@ def is_explicit_booking_confirmation(
         "yes proceed",
     }
 
-    return (
-        normalized
-        in explicit_phrases
-    )
+    return normalized in explicit_phrases
 
 
 async def prepare_room_booking(
@@ -522,74 +413,33 @@ async def prepare_room_booking(
     """
 
     required_values = {
-        "room_type": (
-            tool_input.room_type
-        ),
-        "check_in": (
-            tool_input.check_in
-        ),
-        "check_out": (
-            tool_input.check_out
-        ),
-        "adults": (
-            tool_input.adults
-        ),
-        "children": (
-            tool_input.children
-        ),
-        "guest_name": (
-            tool_input.guest_name
-        ),
+        "room_type": (tool_input.room_type),
+        "check_in": (tool_input.check_in),
+        "check_out": (tool_input.check_out),
+        "adults": (tool_input.adults),
+        "children": (tool_input.children),
+        "guest_name": (tool_input.guest_name),
     }
 
-    missing_fields = [
-        name
-        for name, value
-        in required_values.items()
-        if value is None
-    ]
+    missing_fields = [name for name, value in required_values.items() if value is None]
 
     if missing_fields:
         return RoomBookingToolResult(
             status="missing_information",
-            missing_fields=(
-                missing_fields
-            ),
+            missing_fields=(missing_fields),
         )
 
     # These are guaranteed by the checks above.
-    assert (
-        tool_input.room_type
-        is not None
-    )
-    assert (
-        tool_input.check_in
-        is not None
-    )
-    assert (
-        tool_input.check_out
-        is not None
-    )
-    assert (
-        tool_input.adults
-        is not None
-    )
-    assert (
-        tool_input.children
-        is not None
-    )
-    assert (
-        tool_input.guest_name
-        is not None
-    )
+    assert tool_input.room_type is not None
+    assert tool_input.check_in is not None
+    assert tool_input.check_out is not None
+    assert tool_input.adults is not None
+    assert tool_input.children is not None
+    assert tool_input.guest_name is not None
 
-    matches = (
-        await find_room_type_matches(
-            context=context,
-            room_type=(
-                tool_input.room_type
-            ),
-        )
+    matches = await find_room_type_matches(
+        context=context,
+        room_type=(tool_input.room_type),
     )
 
     if not matches:
@@ -600,144 +450,71 @@ async def prepare_room_booking(
     if len(matches) > 1:
         return RoomBookingToolResult(
             status="room_ambiguous",
-            matching_room_types=[
-                room_type.name
-                for room_type in matches
-            ],
+            matching_room_types=[room_type.name for room_type in matches],
         )
 
     room_type = matches[0]
 
-    availability_request = (
-        RoomAvailabilityRequest(
-            check_in=(
-                tool_input.check_in
-            ),
-            check_out=(
-                tool_input.check_out
-            ),
-            adults=(
-                tool_input.adults
-            ),
-            children=(
-                tool_input.children
-            ),
-            rooms=tool_input.rooms,
-        )
+    availability_request = RoomAvailabilityRequest(
+        check_in=(tool_input.check_in),
+        check_out=(tool_input.check_out),
+        adults=(tool_input.adults),
+        children=(tool_input.children),
+        rooms=tool_input.rooms,
     )
 
-    availability = (
-        await search_room_availability(
-            context.session,
-            organization_id=(
-                context.organization_id
-            ),
-            property_id=(
-                context.property_id
-            ),
-            request=(
-                availability_request
-            ),
-            room_type_id=(
-                room_type.id
-            ),
-        )
+    availability = await search_room_availability(
+        context.session,
+        organization_id=(context.organization_id),
+        property_id=(context.property_id),
+        request=(availability_request),
+        room_type_id=(room_type.id),
     )
 
     if not availability.options:
         return RoomBookingToolResult(
             status="unavailable",
-            room_type_name=(
-                room_type.name
-            ),
-            check_in=(
-                tool_input.check_in
-            ),
-            check_out=(
-                tool_input.check_out
-            ),
+            room_type_name=(room_type.name),
+            check_in=(tool_input.check_in),
+            check_out=(tool_input.check_out),
         )
 
-    option = (
-        availability.options[0]
-    )
+    option = availability.options[0]
 
-    total_amount = (
-        option.nightly_rate
-        * availability.nights
-        * tool_input.rooms
-    )
+    total_amount = option.nightly_rate * availability.nights * tool_input.rooms
 
-    pending_booking = (
-        PendingRoomBooking(
-            idempotency_key=uuid4(),
-            room_type_id=(
-                room_type.id
-            ),
-            room_type_name=(
-                room_type.name
-            ),
-            check_in=(
-                tool_input.check_in
-            ),
-            check_out=(
-                tool_input.check_out
-            ),
-            adults=(
-                tool_input.adults
-            ),
-            children=(
-                tool_input.children
-            ),
-            rooms=tool_input.rooms,
-            guest_name=(
-                tool_input.guest_name
-            ),
-            guest_email=(
-                tool_input.guest_email
-            ),
-            guest_phone=(
-                tool_input.guest_phone
-            ),
-            nightly_rate=(
-                option.nightly_rate
-            ),
-            total_amount=(
-                total_amount
-            ),
-            currency=(
-                option.currency
-            ),
-        )
+    pending_booking = PendingRoomBooking(
+        idempotency_key=uuid4(),
+        room_type_id=(room_type.id),
+        room_type_name=(room_type.name),
+        check_in=(tool_input.check_in),
+        check_out=(tool_input.check_out),
+        adults=(tool_input.adults),
+        children=(tool_input.children),
+        rooms=tool_input.rooms,
+        guest_name=(tool_input.guest_name),
+        guest_email=(tool_input.guest_email),
+        guest_phone=(tool_input.guest_phone),
+        nightly_rate=(option.nightly_rate),
+        total_amount=(total_amount),
+        currency=(option.currency),
     )
 
     await set_pending_booking(
         context.session,
-        assistant_session=(
-            assistant_session
-        ),
-        pending_booking=(
-            pending_booking
-        ),
+        assistant_session=(assistant_session),
+        pending_booking=(pending_booking),
     )
 
     return RoomBookingToolResult(
         status="confirmation_required",
-        room_type_name=(
-            room_type.name
-        ),
-        check_in=(
-            tool_input.check_in
-        ),
-        check_out=(
-            tool_input.check_out
-        ),
+        room_type_name=(room_type.name),
+        check_in=(tool_input.check_in),
+        check_out=(tool_input.check_out),
         adults=tool_input.adults,
         children=tool_input.children,
         rooms=tool_input.rooms,
-        nightly_rate=(
-            option.nightly_rate
-        ),
+        nightly_rate=(option.nightly_rate),
         total_amount=total_amount,
         currency=option.currency,
     )
@@ -756,129 +533,79 @@ async def confirm_pending_room_booking(
     by the LLM at this stage.
     """
 
-    pending = get_pending_booking(
-        assistant_session
-    )
+    pending = get_pending_booking(assistant_session)
 
     if pending is None:
         return RoomBookingToolResult(
             status="missing_information",
-            missing_fields=[
-                "pending_booking"
-            ],
+            missing_fields=["pending_booking"],
         )
 
-    if not is_explicit_booking_confirmation(
-        user_message
-    ):
+    if not is_explicit_booking_confirmation(user_message):
         return RoomBookingToolResult(
-            status=(
-                "confirmation_not_explicit"
-            ),
-            room_type_name=(
-                pending.room_type_name
-            ),
+            status=("confirmation_not_explicit"),
+            room_type_name=(pending.room_type_name),
             check_in=pending.check_in,
             check_out=pending.check_out,
             adults=pending.adults,
             children=pending.children,
             rooms=pending.rooms,
-            nightly_rate=(
-                pending.nightly_rate
-            ),
-            total_amount=(
-                pending.total_amount
-            ),
+            nightly_rate=(pending.nightly_rate),
+            total_amount=(pending.total_amount),
             currency=pending.currency,
         )
 
-    booking_request = (
-        RoomBookingRequest(
-            room_type_id=(
-                pending.room_type_id
-            ),
-            check_in=pending.check_in,
-            check_out=pending.check_out,
-            adults=pending.adults,
-            children=pending.children,
-            rooms=pending.rooms,
-            guest_name=(
-                pending.guest_name
-            ),
-            guest_email=(
-                pending.guest_email
-            ),
-            guest_phone=(
-                pending.guest_phone
-            ),
-        )
+    booking_request = RoomBookingRequest(
+        room_type_id=(pending.room_type_id),
+        check_in=pending.check_in,
+        check_out=pending.check_out,
+        adults=pending.adults,
+        children=pending.children,
+        rooms=pending.rooms,
+        guest_name=(pending.guest_name),
+        guest_email=(pending.guest_email),
+        guest_phone=(pending.guest_phone),
     )
 
     try:
-        booking = (
-            await create_room_booking(
-                context.session,
-                organization_id=(
-                    context.organization_id
-                ),
-                property_id=(
-                    context.property_id
-                ),
-                request=booking_request,
-                idempotency_key=(
-                    pending.idempotency_key
-                ),
-            )
+        booking = await create_room_booking(
+            context.session,
+            organization_id=(context.organization_id),
+            property_id=(context.property_id),
+            request=booking_request,
+            idempotency_key=(pending.idempotency_key),
         )
 
     except RoomUnavailableError:
         await clear_pending_booking(
             context.session,
-            assistant_session=(
-                assistant_session
-            ),
+            assistant_session=(assistant_session),
         )
 
         return RoomBookingToolResult(
             status="unavailable",
-            room_type_name=(
-                pending.room_type_name
-            ),
-            check_in=(
-                pending.check_in
-            ),
-            check_out=(
-                pending.check_out
-            ),
+            room_type_name=(pending.room_type_name),
+            check_in=(pending.check_in),
+            check_out=(pending.check_out),
         )
 
     await clear_pending_booking(
         context.session,
-        assistant_session=(
-            assistant_session
-        ),
+        assistant_session=(assistant_session),
     )
 
     return RoomBookingToolResult(
         status="confirmed",
-        room_type_name=(
-            booking.room_type_name
-        ),
+        room_type_name=(booking.room_type_name),
         check_in=booking.check_in,
         check_out=booking.check_out,
         adults=booking.adults,
         children=booking.children,
         rooms=booking.rooms,
-        nightly_rate=(
-            booking.nightly_rate
-        ),
-        total_amount=(
-            booking.total_amount
-        ),
+        nightly_rate=(booking.nightly_rate),
+        total_amount=(booking.total_amount),
         currency=booking.currency,
-        confirmation_code=(
-            booking.confirmation_code
-        ),
+        confirmation_code=(booking.confirmation_code),
     )
 
 
@@ -900,22 +627,14 @@ async def execute_room_booking_tool(
     """
 
     if tool_input.confirm:
-        return (
-            await confirm_pending_room_booking(
-                context=context,
-                assistant_session=(
-                    assistant_session
-                ),
-                user_message=(
-                    user_message
-                ),
-            )
+        return await confirm_pending_room_booking(
+            context=context,
+            assistant_session=(assistant_session),
+            user_message=(user_message),
         )
 
     return await prepare_room_booking(
         tool_input,
         context=context,
-        assistant_session=(
-            assistant_session
-        ),
+        assistant_session=(assistant_session),
     )

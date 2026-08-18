@@ -68,10 +68,15 @@ class Settings(BaseSettings):
     rag_match_count: int = 6
     rag_min_similarity: float = 0.45
 
-    # LLM settings remain optional until the assistant layer is implemented.
+    # Primary LLM - Groq
     llm_api_key: SecretStr | None = None
     llm_base_url: str | None = None
     llm_model: str | None = None
+
+    # Fallback LLM - NVIDIA NIM
+    nvidia_api_key: SecretStr | None = None
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_model: str = "mistralai/mistral-nemotron"
 
     # Assistant runtime
     llm_timeout_seconds: float = 30.0

@@ -293,9 +293,7 @@ class RoomBooking(Base):
         nullable=False,
     )
 
-    idempotency_key: Mapped[
-        UUID | None
-    ] = mapped_column(
+    idempotency_key: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         nullable=True,
         unique=True,
@@ -821,9 +819,7 @@ async def create_room_booking(
        multiple reservations because of retries.
     """
 
-    nights = validate_stay(
-        request
-    )
+    nights = validate_stay(request)
 
     # Fast retry path.
     #
@@ -832,61 +828,34 @@ async def create_room_booking(
     if idempotency_key is not None:
         existing_booking = await session.scalar(
             select(RoomBooking).where(
-                RoomBooking.idempotency_key
-                == idempotency_key,
-                RoomBooking.organization_id
-                == organization_id,
-                RoomBooking.property_id
-                == property_id,
+                RoomBooking.idempotency_key == idempotency_key,
+                RoomBooking.organization_id == organization_id,
+                RoomBooking.property_id == property_id,
             )
         )
 
         if existing_booking is not None:
-            existing_room_type = (
-                await session.scalar(
-                    select(RoomType).where(
-                        RoomType.id
-                        == existing_booking.room_type_id,
-                        RoomType.organization_id
-                        == organization_id,
-                        RoomType.property_id
-                        == property_id,
-                    )
+            existing_room_type = await session.scalar(
+                select(RoomType).where(
+                    RoomType.id == existing_booking.room_type_id,
+                    RoomType.organization_id == organization_id,
+                    RoomType.property_id == property_id,
                 )
             )
 
             return RoomBookingResponse(
-                confirmation_code=(
-                    existing_booking
-                    .confirmation_code
-                ),
-                room_type_id=(
-                    existing_booking
-                    .room_type_id
-                ),
+                confirmation_code=(existing_booking.confirmation_code),
+                room_type_id=(existing_booking.room_type_id),
                 room_type_name=(
-                    existing_room_type.name
-                    if existing_room_type
-                    is not None
-                    else "Room"
+                    existing_room_type.name if existing_room_type is not None else "Room"
                 ),
-                check_in=(
-                    existing_booking.check_in
-                ),
-                check_out=(
-                    existing_booking.check_out
-                ),
+                check_in=(existing_booking.check_in),
+                check_out=(existing_booking.check_out),
                 rooms=existing_booking.rooms,
                 adults=existing_booking.adults,
-                children=(
-                    existing_booking.children
-                ),
-                nightly_rate=(
-                    existing_booking.nightly_rate
-                ),
-                total_amount=(
-                    existing_booking.total_amount
-                ),
+                children=(existing_booking.children),
+                nightly_rate=(existing_booking.nightly_rate),
+                total_amount=(existing_booking.total_amount),
                 currency=existing_booking.currency,
                 status=existing_booking.status,
             )
@@ -895,12 +864,9 @@ async def create_room_booking(
     room_type = await session.scalar(
         select(RoomType)
         .where(
-            RoomType.id
-            == request.room_type_id,
-            RoomType.organization_id
-            == organization_id,
-            RoomType.property_id
-            == property_id,
+            RoomType.id == request.room_type_id,
+            RoomType.organization_id == organization_id,
+            RoomType.property_id == property_id,
             RoomType.is_active.is_(True),
         )
         .with_for_update()
@@ -909,10 +875,7 @@ async def create_room_booking(
     if room_type is None:
         await session.rollback()
 
-        raise RoomUnavailableError(
-            "The requested room type "
-            "is unavailable."
-        )
+        raise RoomUnavailableError("The requested room type is unavailable.")
 
     # Race-safe idempotency check.
     #
@@ -923,43 +886,24 @@ async def create_room_booking(
     if idempotency_key is not None:
         existing_booking = await session.scalar(
             select(RoomBooking).where(
-                RoomBooking.idempotency_key
-                == idempotency_key,
-                RoomBooking.organization_id
-                == organization_id,
-                RoomBooking.property_id
-                == property_id,
+                RoomBooking.idempotency_key == idempotency_key,
+                RoomBooking.organization_id == organization_id,
+                RoomBooking.property_id == property_id,
             )
         )
 
         if existing_booking is not None:
             return RoomBookingResponse(
-                confirmation_code=(
-                    existing_booking
-                    .confirmation_code
-                ),
-                room_type_id=(
-                    existing_booking
-                    .room_type_id
-                ),
+                confirmation_code=(existing_booking.confirmation_code),
+                room_type_id=(existing_booking.room_type_id),
                 room_type_name=room_type.name,
-                check_in=(
-                    existing_booking.check_in
-                ),
-                check_out=(
-                    existing_booking.check_out
-                ),
+                check_in=(existing_booking.check_in),
+                check_out=(existing_booking.check_out),
                 rooms=existing_booking.rooms,
                 adults=existing_booking.adults,
-                children=(
-                    existing_booking.children
-                ),
-                nightly_rate=(
-                    existing_booking.nightly_rate
-                ),
-                total_amount=(
-                    existing_booking.total_amount
-                ),
+                children=(existing_booking.children),
+                nightly_rate=(existing_booking.nightly_rate),
+                total_amount=(existing_booking.total_amount),
                 currency=existing_booking.currency,
                 status=existing_booking.status,
             )
@@ -970,111 +914,68 @@ async def create_room_booking(
     ):
         await session.rollback()
 
-        raise RoomValidationError(
-            "The selected room type cannot "
-            "accommodate the requested guests."
-        )
+        raise RoomValidationError("The selected room type cannot accommodate the requested guests.")
 
     # Re-check live inventory while the lock is held.
     booked_rooms = await session.scalar(
         select(
             func.coalesce(
-                func.sum(
-                    RoomBooking.rooms
-                ),
+                func.sum(RoomBooking.rooms),
                 0,
             )
         ).where(
-            RoomBooking.organization_id
-            == organization_id,
-            RoomBooking.property_id
-            == property_id,
-            RoomBooking.room_type_id
-            == room_type.id,
-            RoomBooking.status
-            == RoomBookingStatus.CONFIRMED,
-            RoomBooking.check_in
-            < request.check_out,
-            RoomBooking.check_out
-            > request.check_in,
+            RoomBooking.organization_id == organization_id,
+            RoomBooking.property_id == property_id,
+            RoomBooking.room_type_id == room_type.id,
+            RoomBooking.status == RoomBookingStatus.CONFIRMED,
+            RoomBooking.check_in < request.check_out,
+            RoomBooking.check_out > request.check_in,
         )
     )
 
     available_rooms = max(
-        room_type.total_rooms
-        - int(
-            booked_rooms or 0
-        ),
+        room_type.total_rooms - int(booked_rooms or 0),
         0,
     )
 
     if available_rooms < request.rooms:
         await session.rollback()
 
-        raise RoomUnavailableError(
-            "The requested rooms are "
-            "no longer available."
-        )
+        raise RoomUnavailableError("The requested rooms are no longer available.")
 
     booking_id = uuid4()
 
-    confirmation_code = (
-        f"HMS-{booking_id.hex[:12].upper()}"
-    )
+    confirmation_code = f"HMS-{booking_id.hex[:12].upper()}"
 
-    total_amount = (
-        room_type.nightly_rate
-        * nights
-        * request.rooms
-    )
+    total_amount = room_type.nightly_rate * nights * request.rooms
 
     booking = RoomBooking(
         id=booking_id,
         organization_id=organization_id,
         property_id=property_id,
         room_type_id=room_type.id,
-        confirmation_code=(
-            confirmation_code
-        ),
-        idempotency_key=(
-            idempotency_key
-        ),
+        confirmation_code=(confirmation_code),
+        idempotency_key=(idempotency_key),
         guest_name=request.guest_name,
-        guest_email=(
-            request.guest_email.strip()
-            if request.guest_email
-            else None
-        ),
-        guest_phone=(
-            request.guest_phone.strip()
-            if request.guest_phone
-            else None
-        ),
+        guest_email=(request.guest_email.strip() if request.guest_email else None),
+        guest_phone=(request.guest_phone.strip() if request.guest_phone else None),
         check_in=request.check_in,
         check_out=request.check_out,
         rooms=request.rooms,
         adults=request.adults,
         children=request.children,
-        nightly_rate=(
-            room_type.nightly_rate
-        ),
+        nightly_rate=(room_type.nightly_rate),
         total_amount=total_amount,
         currency=room_type.currency,
-        status=(
-            RoomBookingStatus.CONFIRMED
-        ),
+        status=(RoomBookingStatus.CONFIRMED),
     )
 
-    session.add(
-        booking
-    )
+    session.add(booking)
 
     await session.commit()
 
     return RoomBookingResponse(
-        confirmation_code=(
-            confirmation_code
-        ),
+        confirmation_code=(confirmation_code),
         room_type_id=room_type.id,
         room_type_name=room_type.name,
         check_in=request.check_in,
@@ -1082,13 +983,12 @@ async def create_room_booking(
         rooms=request.rooms,
         adults=request.adults,
         children=request.children,
-        nightly_rate=(
-            room_type.nightly_rate
-        ),
+        nightly_rate=(room_type.nightly_rate),
         total_amount=total_amount,
         currency=room_type.currency,
         status=RoomBookingStatus.CONFIRMED,
     )
+
 
 # ---------------------------------------------------------------------------
 # Routes

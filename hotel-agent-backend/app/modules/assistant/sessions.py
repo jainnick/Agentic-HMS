@@ -21,7 +21,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-
 MAX_ASSISTANT_HISTORY_MESSAGES = 20
 
 
@@ -64,9 +63,7 @@ class AssistantSession(Base):
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
         default=uuid4,
-        server_default=text(
-            "gen_random_uuid()"
-        ),
+        server_default=text("gen_random_uuid()"),
     )
 
     organization_id: Mapped[UUID] = mapped_column(
@@ -79,20 +76,14 @@ class AssistantSession(Base):
         nullable=False,
     )
 
-    messages: Mapped[
-        list[dict[str, str]]
-    ] = mapped_column(
+    messages: Mapped[list[dict[str, str]]] = mapped_column(
         JSONB,
         nullable=False,
         default=list,
-        server_default=text(
-            "'[]'::jsonb"
-        ),
+        server_default=text("'[]'::jsonb"),
     )
 
-    pending_booking: Mapped[
-        dict[str, object] | None
-    ] = mapped_column(
+    pending_booking: Mapped[dict[str, object] | None] = mapped_column(
         JSONB,
         nullable=True,
     )
@@ -183,19 +174,14 @@ async def get_or_create_assistant_session(
     if session_id is not None:
         assistant_session = await session.scalar(
             select(AssistantSession).where(
-                AssistantSession.id
-                == session_id,
-                AssistantSession.organization_id
-                == organization_id,
-                AssistantSession.property_id
-                == property_id,
+                AssistantSession.id == session_id,
+                AssistantSession.organization_id == organization_id,
+                AssistantSession.property_id == property_id,
             )
         )
 
         if assistant_session is None:
-            raise AssistantSessionNotFoundError(
-                "Assistant session was not found."
-            )
+            raise AssistantSessionNotFoundError("Assistant session was not found.")
 
         return assistant_session
 
@@ -209,9 +195,7 @@ async def get_or_create_assistant_session(
 
     await session.commit()
 
-    await session.refresh(
-        assistant_session
-    )
+    await session.refresh(assistant_session)
 
     return assistant_session
 
@@ -227,16 +211,11 @@ def get_conversation_history(
     """
 
     messages = [
-        AssistantConversationMessage.model_validate(
-            message
-        )
+        AssistantConversationMessage.model_validate(message)
         for message in assistant_session.messages
     ]
 
-    return [
-        message.model_dump()
-        for message in messages
-    ]
+    return [message.model_dump() for message in messages]
 
 
 async def save_conversation_turn(
@@ -253,9 +232,7 @@ async def save_conversation_turn(
     usage does not grow forever.
     """
 
-    history = list(
-        assistant_session.messages
-    )
+    history = list(assistant_session.messages)
 
     history.extend(
         [
@@ -270,9 +247,7 @@ async def save_conversation_turn(
         ]
     )
 
-    assistant_session.messages = history[
-        -MAX_ASSISTANT_HISTORY_MESSAGES:
-    ]
+    assistant_session.messages = history[-MAX_ASSISTANT_HISTORY_MESSAGES:]
 
     await session.commit()
 
@@ -284,15 +259,10 @@ def get_pending_booking(
     Return validated server-owned booking state.
     """
 
-    if (
-        assistant_session.pending_booking
-        is None
-    ):
+    if assistant_session.pending_booking is None:
         return None
 
-    return PendingRoomBooking.model_validate(
-        assistant_session.pending_booking
-    )
+    return PendingRoomBooking.model_validate(assistant_session.pending_booking)
 
 
 async def set_pending_booking(
@@ -305,11 +275,7 @@ async def set_pending_booking(
     Save a quoted booking waiting for confirmation.
     """
 
-    assistant_session.pending_booking = (
-        pending_booking.model_dump(
-            mode="json"
-        )
-    )
+    assistant_session.pending_booking = pending_booking.model_dump(mode="json")
 
     await session.commit()
 
