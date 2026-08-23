@@ -15,19 +15,14 @@ settings = get_settings()
 
 raw_database_url = make_url(settings.database_url)
 
-# Vercel's Supabase integration appends `sslmode=require` to POSTGRES_URL.
-# That option is valid for libpq/psycopg URLs, but asyncpg receives URL query
-# options as keyword arguments and rejects `sslmode`. SSL is configured below
-# using asyncpg's supported `ssl` connection argument instead.
-database_query = {
-    key: value
-    for key, value in raw_database_url.query.items()
-    if key.lower() != "sslmode"
-}
-
+# Vercel's Supabase integration may append libpq/ORM-specific query options
+# such as sslmode, pgbouncer, connection_limit, or connect_timeout. SQLAlchemy
+# forwards URL query options to asyncpg as keyword arguments, but asyncpg does
+# not support those names. The backend configures the equivalent runtime
+# behavior explicitly below, so the pooler DSN itself should be query-free.
 database_url = raw_database_url.set(
     drivername="postgresql+asyncpg",
-    query=database_query,
+    query={},
 )
 
 # Supabase's transaction pooler uses port 6543. Serverless functions should not
