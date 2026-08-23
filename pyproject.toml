@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-hms"
+version = "0.1.0"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic",
+  "pydantic-settings",
+  "sqlalchemy",
+  "asyncpg",
+  "alembic",
+  "structlog",
+  "pyjwt[crypto]>=2.10,<3",
+  "tzdata",
+  "python-multipart",
+  "pgvector",
+  "pymupdf",
+  "sentence-transformers>=5.4,<6",
+  "openai",
+  "anyio>=4,<5"
+]
+
+[tool.vercel]
+entrypoint = "app:app"
