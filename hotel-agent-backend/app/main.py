@@ -1,7 +1,9 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.health import router as health_router
 from app.core.config import get_settings
@@ -92,15 +94,11 @@ app.include_router(
     prefix=settings.api_v1_prefix,
 )
 
-
-@app.get(
+# Serve the hotel UI from the same FastAPI/Vercel service. Keeping this mount
+# last preserves all API, health, docs, and OpenAPI routes above it.
+frontend_directory = Path(__file__).resolve().parents[1] / "public"
+app.mount(
     "/",
-    tags=["Root"],
+    StaticFiles(directory=str(frontend_directory), html=True),
+    name="frontend",
 )
-async def root() -> dict[str, str]:
-    """Return basic service information."""
-
-    return {
-        "service": settings.app_name,
-        "documentation": "/docs",
-    }
