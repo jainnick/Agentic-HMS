@@ -20,7 +20,7 @@ dependencies = [
     "tzdata",
     "python-multipart",
     "pgvector",
-    "pymupdf",
+    "pypdf",
     "httpx",
     "openai",
     "anyio>=4,<5",
