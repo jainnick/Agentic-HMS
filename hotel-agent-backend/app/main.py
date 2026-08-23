@@ -12,6 +12,7 @@ from app.modules.assistant.routes import router as assistant_router
 from app.modules.identity.routes import router as identity_router
 from app.modules.knowledge.routes import router as knowledge_router
 from app.modules.onboarding.routes import router as onboarding_router
+from app.modules.portal import router as portal_router
 from app.modules.property_tools import router as property_tools_router
 from app.modules.rooms import router as rooms_router
 
@@ -83,6 +84,11 @@ app.include_router(
 
 app.include_router(
     rooms_router,
+    prefix=settings.api_v1_prefix,
+)
+
+app.include_router(
+    portal_router,
     prefix=settings.api_v1_prefix,
 )
 
