@@ -18,17 +18,16 @@ dependencies = [
     "structlog",
     "pyjwt[crypto]>=2.10,<3",
     "tzdata",
-    "python-multipart", 
-    "pgvector", 
-    "pymupdf", 
-    "sentence-transformers>=5.4,<6", 
+    "python-multipart",
+    "pgvector",
+    "pymupdf",
+    "httpx",
     "openai",
     "anyio>=4,<5",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "httpx",
     "mypy",
     "pytest",
     "pytest-asyncio",
