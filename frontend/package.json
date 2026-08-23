@@ -1,0 +1,11 @@
+{
+  "name": "agentic-hms-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  }
+}
