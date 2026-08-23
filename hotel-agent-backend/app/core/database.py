@@ -13,8 +13,21 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-database_url = make_url(settings.database_url).set(
+raw_database_url = make_url(settings.database_url)
+
+# Vercel's Supabase integration appends `sslmode=require` to POSTGRES_URL.
+# That option is valid for libpq/psycopg URLs, but asyncpg receives URL query
+# options as keyword arguments and rejects `sslmode`. SSL is configured below
+# using asyncpg's supported `ssl` connection argument instead.
+database_query = {
+    key: value
+    for key, value in raw_database_url.query.items()
+    if key.lower() != "sslmode"
+}
+
+database_url = raw_database_url.set(
     drivername="postgresql+asyncpg",
+    query=database_query,
 )
 
 # Supabase's transaction pooler uses port 6543. Serverless functions should not
