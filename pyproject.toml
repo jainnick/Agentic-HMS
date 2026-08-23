@@ -20,9 +20,9 @@ dependencies = [
   "python-multipart",
   "pgvector",
   "pymupdf",
-  "sentence-transformers>=5.4,<6",
   "openai",
-  "anyio>=4,<5"
+  "anyio>=4,<5",
+  "httpx"
 ]
 
 [tool.vercel]
