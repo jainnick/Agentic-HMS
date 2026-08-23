@@ -22,30 +22,30 @@ database_url = make_url(settings.database_url).set(
 # cache must be disabled for transaction-pooling mode.
 uses_transaction_pooler = database_url.port == 6543
 
-connect_args: dict[str, object] = {
-    "ssl": settings.database_ssl_mode,
-    "timeout": settings.database_timeout_seconds,
-}
-
 if uses_transaction_pooler:
-    connect_args["statement_cache_size"] = 0
-
-engine_kwargs: dict[str, object] = {
-    "echo": settings.sql_echo,
-    "pool_pre_ping": True,
-    "connect_args": connect_args,
-}
-
-if uses_transaction_pooler:
-    engine_kwargs["poolclass"] = NullPool
+    engine = create_async_engine(
+        database_url,
+        echo=settings.sql_echo,
+        pool_pre_ping=True,
+        poolclass=NullPool,
+        connect_args={
+            "ssl": settings.database_ssl_mode,
+            "timeout": settings.database_timeout_seconds,
+            "statement_cache_size": 0,
+        },
+    )
 else:
-    engine_kwargs["pool_size"] = settings.database_pool_size
-    engine_kwargs["max_overflow"] = settings.database_max_overflow
-
-engine = create_async_engine(
-    database_url,
-    **engine_kwargs,
-)
+    engine = create_async_engine(
+        database_url,
+        echo=settings.sql_echo,
+        pool_pre_ping=True,
+        pool_size=settings.database_pool_size,
+        max_overflow=settings.database_max_overflow,
+        connect_args={
+            "ssl": settings.database_ssl_mode,
+            "timeout": settings.database_timeout_seconds,
+        },
+    )
 
 AsyncSessionFactory = async_sessionmaker(
     bind=engine,
