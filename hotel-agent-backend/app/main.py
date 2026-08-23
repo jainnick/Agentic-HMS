@@ -1,9 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from app.api.health import router as health_router
 from app.core.config import get_settings
@@ -20,24 +18,14 @@ from app.modules.rooms import router as rooms_router
 
 settings = get_settings()
 
-configure_logging(
-    settings.log_level,
-)
+configure_logging(settings.log_level)
 
 
 @asynccontextmanager
-async def lifespan(
-    _: FastAPI,
-) -> AsyncIterator[None]:
-    """
-    Manage application startup and shutdown resources.
-
-    Database connections are created lazily when requests use them. During
-    shutdown, the SQLAlchemy connection pool is closed cleanly.
-    """
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Manage application startup and shutdown resources."""
 
     yield
-
     await close_database_connections()
 
 
@@ -49,56 +37,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    RequestContextMiddleware,
-)
+app.add_middleware(RequestContextMiddleware)
 
-# Health routes already contain their own route prefix.
-app.include_router(
-    health_router,
-)
+app.include_router(health_router)
+app.include_router(identity_router, prefix=settings.api_v1_prefix)
+app.include_router(onboarding_router, prefix=settings.api_v1_prefix)
+app.include_router(property_tools_router, prefix=settings.api_v1_prefix)
+app.include_router(knowledge_router, prefix=settings.api_v1_prefix)
+app.include_router(assistant_router, prefix=settings.api_v1_prefix)
+app.include_router(rooms_router, prefix=settings.api_v1_prefix)
+app.include_router(portal_router, prefix=settings.api_v1_prefix)
 
-# Authenticated API routes are grouped below /api/v1.
-app.include_router(
-    identity_router,
-    prefix=settings.api_v1_prefix,
-)
 
-app.include_router(
-    onboarding_router,
-    prefix=settings.api_v1_prefix,
-)
+@app.get("/", tags=["Root"])
+async def root() -> dict[str, str]:
+    """Return basic service information when the backend is run directly."""
 
-app.include_router(
-    property_tools_router,
-    prefix=settings.api_v1_prefix,
-)
-
-app.include_router(
-    knowledge_router,
-    prefix=settings.api_v1_prefix,
-)
-
-app.include_router(
-    assistant_router,
-    prefix=settings.api_v1_prefix,
-)
-
-app.include_router(
-    rooms_router,
-    prefix=settings.api_v1_prefix,
-)
-
-app.include_router(
-    portal_router,
-    prefix=settings.api_v1_prefix,
-)
-
-# Serve the hotel UI from the same FastAPI/Vercel service. Keeping this mount
-# last preserves all API, health, docs, and OpenAPI routes above it.
-frontend_directory = Path(__file__).resolve().parents[1] / "public"
-app.mount(
-    "/",
-    StaticFiles(directory=str(frontend_directory), html=True),
-    name="frontend",
-)
+    return {
+        "service": settings.app_name,
+        "documentation": "/docs",
+    }
