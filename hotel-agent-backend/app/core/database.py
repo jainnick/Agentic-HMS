@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 
@@ -16,16 +17,34 @@ database_url = make_url(settings.database_url).set(
     drivername="postgresql+asyncpg",
 )
 
+# Supabase's transaction pooler uses port 6543. Serverless functions should not
+# keep a second client-side pool in front of it, and asyncpg's prepared statement
+# cache must be disabled for transaction-pooling mode.
+uses_transaction_pooler = database_url.port == 6543
+
+connect_args: dict[str, object] = {
+    "ssl": settings.database_ssl_mode,
+    "timeout": settings.database_timeout_seconds,
+}
+
+if uses_transaction_pooler:
+    connect_args["statement_cache_size"] = 0
+
+engine_kwargs: dict[str, object] = {
+    "echo": settings.sql_echo,
+    "pool_pre_ping": True,
+    "connect_args": connect_args,
+}
+
+if uses_transaction_pooler:
+    engine_kwargs["poolclass"] = NullPool
+else:
+    engine_kwargs["pool_size"] = settings.database_pool_size
+    engine_kwargs["max_overflow"] = settings.database_max_overflow
+
 engine = create_async_engine(
     database_url,
-    echo=settings.sql_echo,
-    pool_pre_ping=True,
-    pool_size=settings.database_pool_size,
-    max_overflow=settings.database_max_overflow,
-    connect_args={
-        "ssl": settings.database_ssl_mode,
-        "timeout": settings.database_timeout_seconds,
-    },
+    **engine_kwargs,
 )
 
 AsyncSessionFactory = async_sessionmaker(
