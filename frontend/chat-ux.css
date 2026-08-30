@@ -27,26 +27,42 @@
 .launcher:active{transform:scale(.94)}
 .launcher>span:last-child{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .launcher-dot{
-  width:25px;
-  height:25px;
+  width:27px;
+  height:22px;
   background:transparent;
   box-shadow:none;
   position:relative;
+  border:2px solid #fff;
+  border-radius:10px;
 }
 .launcher-dot::before{
   content:"";
   position:absolute;
-  inset:2px;
-  border:1.8px solid #fff;
-  border-radius:50%;
+  left:3px;
+  bottom:-5px;
+  width:8px;
+  height:8px;
+  background:linear-gradient(135deg,transparent 48%,#fff 49% 61%,transparent 62%);
+  transform:rotate(8deg);
 }
 .launcher-dot::after{
   content:"";
   position:absolute;
-  width:8px;
-  height:8px;
-  right:-8px;
-  top:-7px;
+  width:3px;
+  height:3px;
+  left:6px;
+  top:8px;
+  border-radius:50%;
+  background:#fff;
+  box-shadow:5px 0 0 #fff,10px 0 0 #fff;
+}
+.launcher::after{
+  content:"";
+  position:absolute;
+  width:9px;
+  height:9px;
+  right:8px;
+  top:7px;
   border-radius:50%;
   background:#f4b24a;
   border:2.5px solid var(--paper);
