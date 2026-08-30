@@ -14,7 +14,7 @@ const panel=$('#panel'),chat=$('#chat'),input=$('#chatInput'),send=$('#send'),cl
 const fallbackImages=['https://images.unsplash.com/photo-1743410975074-4be327c0ae63?auto=format&fit=crop&fm=jpg&q=78&w=1200','https://images.unsplash.com/photo-1776361984994-089a9df800f6?auto=format&fit=crop&fm=jpg&q=78&w=1200','https://images.unsplash.com/photo-1762254923872-5bdc4210eb90?auto=format&fit=crop&fm=jpg&q=78&w=1200'];
 let inFlight=false,lastMessage='',rooms=[],pendingBooking=null,adminMediaTimer=null,lastErrorStatus=0;
 
-function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]))}
+function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function money(v,c='INR'){try{return new Intl.NumberFormat('en-IN',{style:'currency',currency:c,maximumFractionDigits:0}).format(+v)}catch{return`${c} ${v}`}}
 function safeJson(raw){try{return JSON.parse(raw)}catch{return null}}
 async function jsonRequest(url,opt={}){let r=await fetch(url,opt),raw=await r.text(),data=safeJson(raw);if(!r.ok){let e=new Error(typeof data?.detail==='string'?data.detail:'Request failed');e.status=r.status;throw e}return data}
