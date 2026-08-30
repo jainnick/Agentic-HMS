@@ -1,0 +1,365 @@
+/* Concierge UX enhancement layer.
+   Keeps the existing Aurelia site/admin styles intact while upgrading the live chat. */
+
+:root{
+  --chat-accent:#0e7a5f;
+  --chat-accent-press:#0b644e;
+  --chat-accent-soft:rgba(14,122,95,.10);
+  --chat-gold:#c9a24b;
+  --chat-glass:rgba(250,248,243,.78);
+  --chat-glass-strong:rgba(250,248,243,.92);
+  --chat-shadow:0 28px 74px rgba(8,24,19,.30),0 2px 10px rgba(8,24,19,.12);
+}
+
+/* Launcher */
+.launcher{
+  width:60px;
+  height:60px;
+  right:24px;
+  bottom:24px;
+  padding:0;
+  border-radius:50%;
+  justify-content:center;
+  background:linear-gradient(155deg,#12836a,#0b5f4a);
+  box-shadow:0 12px 30px rgba(11,80,62,.40),0 2px 6px rgba(10,20,28,.18);
+  transition:transform 90ms ease-out,opacity 180ms ease,filter 180ms ease;
+}
+.launcher:active{transform:scale(.94)}
+.launcher>span:last-child{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.launcher-dot{
+  width:25px;
+  height:25px;
+  background:transparent;
+  box-shadow:none;
+  position:relative;
+}
+.launcher-dot::before{
+  content:"";
+  position:absolute;
+  inset:2px;
+  border:1.8px solid #fff;
+  border-radius:50%;
+}
+.launcher-dot::after{
+  content:"";
+  position:absolute;
+  width:8px;
+  height:8px;
+  right:-8px;
+  top:-7px;
+  border-radius:50%;
+  background:#f4b24a;
+  border:2.5px solid var(--paper);
+}
+body.chat-panel-open .launcher{opacity:0;transform:scale(.72);pointer-events:none}
+
+/* Panel */
+.panel{
+  right:24px;
+  bottom:24px;
+  width:min(402px,calc(100vw - 32px));
+  height:min(672px,calc(100dvh - 72px));
+  border-radius:24px;
+  background:var(--chat-glass);
+  -webkit-backdrop-filter:blur(28px) saturate(175%);
+  backdrop-filter:blur(28px) saturate(175%);
+  border:1px solid rgba(255,255,255,.58);
+  border-top-color:rgba(255,255,255,.78);
+  box-shadow:var(--chat-shadow);
+  transform-origin:100% 100%;
+  will-change:transform,opacity,filter;
+}
+.panel.chat-enter{
+  animation:chatPanelIn 360ms cubic-bezier(.2,.88,.28,1) both;
+}
+.panel.chat-leave{
+  pointer-events:none;
+  animation:chatPanelOut 220ms cubic-bezier(.4,0,1,1) both;
+}
+.panel.chat-dragging{cursor:grabbing;transition:none!important}
+@keyframes chatPanelIn{
+  from{opacity:0;transform:translateY(28px) scale(.90);filter:blur(5px)}
+  to{opacity:1;transform:none;filter:none}
+}
+@keyframes chatPanelOut{
+  from{opacity:1;transform:none;filter:none}
+  to{opacity:0;transform:translateY(34px) scale(.92);filter:blur(4px)}
+}
+
+.phead{
+  position:relative;
+  z-index:3;
+  padding:22px 14px 13px;
+  cursor:grab;
+  user-select:none;
+  touch-action:none;
+  background:linear-gradient(rgba(250,248,243,.76),rgba(250,248,243,.16));
+}
+.phead::before{
+  content:"";
+  position:absolute;
+  width:38px;
+  height:5px;
+  border-radius:4px;
+  background:rgba(20,37,31,.17);
+  top:7px;
+  left:50%;
+  transform:translateX(-50%);
+}
+.panel.chat-scrolled .phead::after{
+  content:"";
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:-16px;
+  height:16px;
+  pointer-events:none;
+  background:linear-gradient(rgba(20,37,31,.10),transparent);
+}
+.phead .mono{
+  width:40px;
+  height:40px;
+  flex:none;
+  background:linear-gradient(150deg,#14344a,#0c2233);
+  color:#f3e3be;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.18);
+}
+.phead-title{font-size:15.5px;font-weight:700;letter-spacing:-.005em}
+.phead-sub{display:flex;align-items:center;gap:6px;font-size:11.8px;line-height:1.3;color:var(--muted);margin-top:2px}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#2fbf8f;box-shadow:0 0 0 3px rgba(47,191,143,.10);flex:none}
+.close{
+  width:30px;
+  height:30px;
+  flex:none;
+  display:grid;
+  place-items:center;
+  background:rgba(20,37,31,.07);
+  color:#43504a;
+  line-height:1;
+  font-size:19px;
+  transition:transform 90ms ease,background 120ms ease;
+}
+.close:hover{background:rgba(20,37,31,.11)}
+.close:active{transform:scale(.94)}
+
+/* Conversation */
+.chat{
+  padding:7px 16px 16px;
+  gap:10px;
+  overscroll-behavior:contain;
+  scrollbar-width:thin;
+}
+.chat>*{flex:none}
+.msg{
+  max-width:87%;
+  font-size:14.5px;
+  line-height:1.46;
+  animation:chatItemIn 300ms cubic-bezier(.2,.9,.3,1) both;
+}
+.msg.user{
+  padding:10px 14px;
+  background:linear-gradient(160deg,#12836a,#0c664f);
+  border-bottom-right-radius:6px;
+  box-shadow:0 2px 8px rgba(11,80,62,.22);
+}
+.msg.assistant{
+  padding:10px 14px;
+  background:rgba(20,37,31,.055);
+  border:1px solid rgba(20,37,31,.045);
+  border-bottom-left-radius:6px;
+}
+@keyframes chatItemIn{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+
+/* While the live backend is answering. */
+.chat-typing{
+  align-self:flex-start;
+  display:inline-flex;
+  gap:4px;
+  padding:12px 14px;
+  border-radius:18px 18px 18px 6px;
+  background:rgba(20,37,31,.055);
+  border:1px solid rgba(20,37,31,.045);
+  animation:chatItemIn 220ms ease both;
+}
+.chat-typing i{width:6px;height:6px;border-radius:50%;background:rgba(20,37,31,.36);animation:chatBlink 1s ease-in-out infinite}
+.chat-typing i:nth-child(2){animation-delay:.14s}.chat-typing i:nth-child(3){animation-delay:.28s}
+@keyframes chatBlink{0%,60%,100%{opacity:.25}30%{opacity:1}}
+
+/* Backend tool traces become quiet, trustworthy status pills. */
+.tool{
+  align-self:center;
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  max-width:90%;
+  padding:5px 11px;
+  border:0;
+  border-radius:999px;
+  background:rgba(20,37,31,.055);
+  color:#6a756f;
+  font-size:11px;
+  line-height:1.2;
+  letter-spacing:.015em;
+  text-transform:none;
+  font-weight:650;
+  animation:chatItemIn 240ms ease both;
+}
+.tool::before{
+  content:"✓";
+  width:14px;
+  height:14px;
+  border-radius:50%;
+  display:grid;
+  place-items:center;
+  background:var(--chat-accent-soft);
+  color:var(--chat-accent);
+  font-size:9px;
+  font-weight:900;
+}
+
+/* Grounding chips */
+.source{
+  align-self:flex-start;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  margin-top:-5px;
+  padding:5px 9px;
+  border-radius:999px;
+  background:#fff;
+  border:1px solid var(--line);
+  color:var(--muted);
+  font-size:10.8px;
+  line-height:1;
+  font-weight:650;
+}
+.source::before{content:"▤";font-size:11px;color:var(--chat-accent)}
+
+/* Suggestions */
+.chips{
+  flex-wrap:wrap;
+  overflow:visible;
+  gap:7px;
+  padding:4px 16px 9px;
+}
+.chips button{
+  white-space:normal;
+  padding:8px 12px;
+  background:#fff;
+  border:1px solid rgba(20,37,31,.13);
+  color:#43504a;
+  font-size:12px;
+  font-weight:650;
+  box-shadow:0 1px 2px rgba(10,20,28,.04);
+  transition:transform 90ms ease,background 120ms ease;
+}
+.chips button:hover{background:#fcfcfa}
+.chips button:active{transform:scale(.96)}
+
+/* State-aware quote / confirmation surfaces */
+.booking-actions{padding:5px 14px 10px}
+.booking-action-card{
+  padding:16px;
+  border-radius:16px;
+  background:#fff;
+  border:1px solid var(--line);
+  box-shadow:0 1px 2px rgba(10,20,28,.05),0 8px 24px rgba(10,20,28,.05);
+}
+.booking-action-eyebrow{letter-spacing:.11em}
+.booking-action-room{font:600 18px/1.15 var(--display);margin-top:5px}
+.booking-action-price{font-size:13px;margin-top:4px}
+.booking-action-confirm{
+  padding:12px 14px;
+  border-radius:12px;
+  background:var(--chat-accent);
+  box-shadow:0 4px 14px rgba(14,122,95,.28);
+}
+.booking-action-confirm:hover{background:var(--chat-accent-press)}
+.booking-action-secondary button{border-radius:10px}
+.booking-action-note{font-size:10.8px;line-height:1.4}
+
+.booking-confirm{
+  position:relative;
+  overflow:hidden;
+  border-radius:18px;
+  padding:20px;
+  background:radial-gradient(140% 120% at 85% -20%,rgba(201,162,75,.34),transparent 55%),linear-gradient(160deg,#16303f 0%,#0d1e2b 70%,#0a1722 100%);
+  box-shadow:0 18px 40px rgba(8,18,26,.35),inset 0 1px 0 rgba(255,255,255,.12);
+  animation:chatItemIn 360ms cubic-bezier(.2,.9,.3,1) both;
+}
+.booking-confirm::before{
+  content:"";
+  position:absolute;
+  top:-45%;
+  bottom:-45%;
+  width:36%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.14),transparent);
+  transform:translateX(-190%) rotate(8deg);
+  animation:chatShine 1.3s .3s ease-out 1 forwards;
+}
+@keyframes chatShine{to{transform:translateX(470%) rotate(8deg)}}
+.booking-confirm .check{background:rgba(143,227,192,.14);color:#8fe3c0;border:1px solid rgba(143,227,192,.2)}
+.booking-confirm h4{font-size:21px;margin:12px 0 6px}
+.booking-code{font-size:24px;font-weight:750;letter-spacing:.08em;color:#f7e9c8;font-variant-numeric:tabular-nums}
+.booking-details{margin-top:10px}
+.download-confirm{position:relative;border-radius:11px}
+
+/* Composer */
+.input{
+  margin:0 12px 5px;
+  padding:6px 6px 6px 16px;
+  border-radius:999px;
+  background:#fff;
+  border:1px solid rgba(20,37,31,.11);
+  box-shadow:0 1px 3px rgba(10,20,28,.05);
+}
+.input input{font-size:14.5px;color:var(--ink)}
+.input input::placeholder{color:#8a948f}
+.input input:focus{outline:none}
+.input:focus-within{border-color:rgba(14,122,95,.34);box-shadow:0 0 0 3px rgba(14,122,95,.07)}
+.input button{
+  width:34px;
+  height:34px;
+  display:grid;
+  place-items:center;
+  background:var(--chat-accent);
+  transition:transform 90ms ease,background 120ms ease,opacity 120ms ease;
+}
+.input button:hover{background:var(--chat-accent-press)}
+.input button:active{transform:scale(.94)}
+.input button:disabled{background:rgba(20,37,31,.14);color:rgba(20,37,31,.36);cursor:default}
+.powered{text-align:center;padding:2px 0 9px;font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:rgba(20,37,31,.30)}
+
+/* Keyboard focus */
+.panel button:focus-visible,.panel input:focus-visible,.launcher:focus-visible{
+  outline:2px solid var(--chat-accent);
+  outline-offset:2px;
+}
+
+@media(max-width:600px){
+  .panel{
+    right:0;
+    left:0;
+    bottom:0;
+    width:100%;
+    height:min(86dvh,700px);
+    border-radius:22px 22px 0 0;
+    border-left:0;
+    border-right:0;
+    border-bottom:0;
+  }
+  .launcher{right:18px;bottom:18px}
+  .phead{padding-top:24px}
+  .chat{padding-left:13px;padding-right:13px}
+  .chips{padding-left:13px;padding-right:13px}
+  .booking-actions{padding-left:12px;padding-right:12px}
+}
+
+@media(prefers-reduced-transparency:reduce){
+  .panel{background:#faf8f3;-webkit-backdrop-filter:none;backdrop-filter:none}
+}
+@media(prefers-reduced-motion:reduce){
+  .panel.chat-enter,.panel.chat-leave,.msg,.tool,.chat-typing,.booking-confirm{animation:none}
+  .booking-confirm::before{animation:none;display:none}
+  .launcher,.chips button,.input button{transition:none}
+}
