@@ -260,8 +260,7 @@ async def upload_room_image(
         )
 
     object_path = (
-        f"{tenant_context.organization_id}/{property_id}/{room_type_id}/"
-        f"{uuid4().hex}.{extension}"
+        f"{tenant_context.organization_id}/{property_id}/{room_type_id}/{uuid4().hex}.{extension}"
     )
     service_key = settings.supabase_service_role_key.get_secret_value()
     upload_url = (
