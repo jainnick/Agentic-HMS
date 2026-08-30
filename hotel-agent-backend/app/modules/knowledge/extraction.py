@@ -80,9 +80,7 @@ def extract_pdf_pages(pdf_bytes: bytes) -> list[ExtractedPage]:
         normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
         raw_blocks = re.split(r"\n\s*\n+", normalized)
         cleaned_blocks = [
-            cleaned
-            for block in raw_blocks
-            if (cleaned := normalize_extracted_text(block))
+            cleaned for block in raw_blocks if (cleaned := normalize_extracted_text(block))
         ]
 
         if not cleaned_blocks:
