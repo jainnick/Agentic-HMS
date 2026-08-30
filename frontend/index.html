@@ -7,6 +7,7 @@
 <title>Aurelia House · New Delhi</title>
 <link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/chat-ux.css">
+<link rel="stylesheet" href="/chat-features.css">
 </head>
 <body>
 <div id="toast" class="toast"></div>
@@ -25,5 +26,6 @@
 <div id="login" class="login hidden"><form id="loginForm"><h2 style="font:600 30px var(--display);margin-top:0">Hotel admin sign in</h2><p class="muted">Use your Supabase HMS account.</p><label>Email</label><input id="email" type="email" required><label>Password</label><input id="password" type="password" required><div id="loginErr" class="muted"></div><button class="primary" style="width:100%;margin-top:14px">Sign in</button></form></div>
 <div id="roomModal" class="modal hidden"><div class="modal-card"><div class="admin-top"><div><h2 style="font:600 30px var(--display);margin:0">Add room type</h2><p class="muted">This writes directly to the selected property in Supabase through FastAPI.</p></div><button id="closeRoomModal" class="close">×</button></div><form id="roomForm"><div class="form-grid"><div class="field"><label>Room code</label><input id="roomCode" placeholder="PREM-KING" maxlength="64" required></div><div class="field"><label>Name</label><input id="roomName" placeholder="Premium King" maxlength="255" required></div><div class="field full"><label>Description</label><textarea id="roomDescription" rows="3" placeholder="Short guest-facing description"></textarea></div><div class="field"><label>Total rooms</label><input id="roomTotal" type="number" min="1" value="1" required></div><div class="field"><label>Nightly rate</label><input id="roomRate" type="number" min="0" step="0.01" required></div><div class="field"><label>Max adults</label><input id="roomAdults" type="number" min="1" value="2" required></div><div class="field"><label>Max children</label><input id="roomChildren" type="number" min="0" value="0" required></div><div class="field"><label>Currency</label><input id="roomCurrency" value="INR" maxlength="3" required></div><div class="field"><label>Status</label><select id="roomActive"><option value="true">Active</option><option value="false">Inactive</option></select></div></div><div class="modal-actions"><button type="button" id="cancelRoom" class="secondary">Cancel</button><button type="submit" class="primary">Create room type</button></div></form></div></div>
 <script type="module" src="/app.js"></script>
+<script type="module" src="/chat-features.js"></script>
 </body>
 </html>
