@@ -12,20 +12,10 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-
 revision: str = "6a9f3c1d8e42"
-
-down_revision: (
-    str | Sequence[str] | None
-) = "2f8110355a4d"
-
-branch_labels: (
-    str | Sequence[str] | None
-) = None
-
-depends_on: (
-    str | Sequence[str] | None
-) = None
+down_revision: str | Sequence[str] | None = "2f8110355a4d"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -56,9 +46,7 @@ def upgrade() -> None:
         sa.Column(
             "id",
             sa.UUID(),
-            server_default=sa.text(
-                "gen_random_uuid()"
-            ),
+            server_default=sa.text("gen_random_uuid()"),
             nullable=False,
         ),
         sa.Column(
@@ -73,39 +61,25 @@ def upgrade() -> None:
         ),
         sa.Column(
             "messages",
-            postgresql.JSONB(
-                astext_type=sa.Text()
-            ),
-            server_default=sa.text(
-                "'[]'::jsonb"
-            ),
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'[]'::jsonb"),
             nullable=False,
         ),
         sa.Column(
             "pending_booking",
-            postgresql.JSONB(
-                astext_type=sa.Text()
-            ),
+            postgresql.JSONB(astext_type=sa.Text()),
             nullable=True,
         ),
         sa.Column(
             "created_at",
-            sa.DateTime(
-                timezone=True
-            ),
-            server_default=sa.text(
-                "now()"
-            ),
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
-            sa.DateTime(
-                timezone=True
-            ),
-            server_default=sa.text(
-                "now()"
-            ),
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(
@@ -117,15 +91,10 @@ def upgrade() -> None:
                 "properties.organization_id",
                 "properties.id",
             ],
-            name=(
-                "fk_assistant_sessions_"
-                "property_organization"
-            ),
+            name=("fk_assistant_sessions_property_organization"),
             ondelete="CASCADE",
         ),
-        sa.PrimaryKeyConstraint(
-            "id"
-        ),
+        sa.PrimaryKeyConstraint("id"),
     )
 
     op.create_index(
@@ -156,9 +125,7 @@ def downgrade() -> None:
         table_name="assistant_sessions",
     )
 
-    op.drop_table(
-        "assistant_sessions"
-    )
+    op.drop_table("assistant_sessions")
 
     op.drop_constraint(
         "uq_room_bookings_idempotency_key",
