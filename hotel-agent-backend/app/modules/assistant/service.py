@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import (
@@ -29,6 +31,7 @@ from app.modules.assistant.sessions import (
     AssistantSession,
     get_conversation_history,
     get_or_create_assistant_session,
+    get_pending_booking,
     save_conversation_turn,
 )
 from app.modules.assistant.tools.knowledge import (
@@ -104,6 +107,18 @@ class AssistantToolTrace:
     frozen=True,
     slots=True,
 )
+class AssistantPendingBooking:
+    """Guest-safe view of the server-owned pending booking."""
+
+    room_type_name: str
+    total_amount: Decimal
+    currency: str
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
 class HotelAssistantResult:
     session_id: UUID
 
@@ -114,6 +129,43 @@ class HotelAssistantResult:
     tool_calls: list[AssistantToolTrace]
 
     model_request_ids: list[str]
+
+    next_action: Literal["confirm_booking"] | None
+
+    pending_booking: AssistantPendingBooking | None
+
+
+def get_booking_ui_state(
+    assistant_session: AssistantSession,
+) -> tuple[
+    Literal["confirm_booking"] | None,
+    AssistantPendingBooking | None,
+]:
+    """
+    Return the deterministic booking UI state for this assistant session.
+
+    A pending booking exists only after the backend has prepared a valid quote,
+    so its presence means final guest confirmation is the next write-side step.
+    """
+
+    pending_booking = get_pending_booking(
+        assistant_session,
+    )
+
+    if pending_booking is None:
+        return (
+            None,
+            None,
+        )
+
+    return (
+        "confirm_booking",
+        AssistantPendingBooking(
+            room_type_name=(pending_booking.room_type_name),
+            total_amount=(pending_booking.total_amount),
+            currency=(pending_booking.currency),
+        ),
+    )
 
 
 class AssistantToolErrorResult(BaseModel):
@@ -238,10 +290,6 @@ async def execute_requested_tool(
             "The requested assistant tool is disabled for this property."
         )
 
-    # ------------------------------------------------------------
-    # Knowledge
-    # ------------------------------------------------------------
-
     if property_tool == PropertyToolName.KNOWLEDGE_SEARCH:
         try:
             tool_input = KnowledgeSearchToolInput.model_validate_json(tool_call.arguments)
@@ -255,10 +303,6 @@ async def execute_requested_tool(
             tool_input,
             context=context,
         )
-
-    # ------------------------------------------------------------
-    # Availability
-    # ------------------------------------------------------------
 
     if property_tool == PropertyToolName.ROOM_AVAILABILITY:
         try:
@@ -287,10 +331,6 @@ async def execute_requested_tool(
 
         except RoomValidationError as exc:
             return AssistantToolErrorResult(error=str(exc))
-
-    # ------------------------------------------------------------
-    # Booking
-    # ------------------------------------------------------------
 
     if property_tool == PropertyToolName.ROOM_BOOKING:
         try:
@@ -437,10 +477,6 @@ async def run_hotel_assistant(
 
         messages.append(model_turn.assistant_message)
 
-        # --------------------------------------------------------
-        # Final natural-language answer
-        # --------------------------------------------------------
-
         if not model_turn.tool_calls:
             if model_turn.text is None:
                 raise AssistantEmptyResponseError(
@@ -454,17 +490,22 @@ async def run_hotel_assistant(
                 assistant_message=(model_turn.text),
             )
 
+            (
+                next_action,
+                pending_booking,
+            ) = get_booking_ui_state(
+                assistant_session,
+            )
+
             return HotelAssistantResult(
                 session_id=(assistant_session.id),
                 answer=(model_turn.text),
                 sources=sources,
                 tool_calls=(tool_traces),
                 model_request_ids=(model_request_ids),
+                next_action=next_action,
+                pending_booking=pending_booking,
             )
-
-        # --------------------------------------------------------
-        # Bounded tool loop
-        # --------------------------------------------------------
 
         if completed_tool_rounds >= settings.assistant_max_tool_rounds:
             raise AssistantToolRoundLimitError(

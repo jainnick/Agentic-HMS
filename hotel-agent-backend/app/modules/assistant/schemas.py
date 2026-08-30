@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import (
@@ -55,11 +57,26 @@ class AssistantToolCallResponse(BaseModel):
     )
 
 
+class AssistantPendingBookingResponse(BaseModel):
+    """
+    Safe guest-facing booking quote.
+
+    Internal IDs and idempotency data deliberately remain server-side.
+    """
+
+    room_type_name: str
+    total_amount: Decimal
+    currency: str
+
+
 class AssistantChatResponse(BaseModel):
     """
     Guest-facing response.
 
     session_id must be sent back on later messages.
+
+    next_action="confirm_booking" is returned only when the backend has a
+    prepared pending booking waiting for the guest's final confirmation.
     """
 
     session_id: UUID
@@ -73,3 +90,7 @@ class AssistantChatResponse(BaseModel):
     tool_calls: list[AssistantToolCallResponse] = Field(
         default_factory=list,
     )
+
+    next_action: Literal["confirm_booking"] | None = None
+
+    pending_booking: AssistantPendingBookingResponse | None = None

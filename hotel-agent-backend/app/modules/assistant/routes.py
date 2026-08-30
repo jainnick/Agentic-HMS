@@ -26,6 +26,7 @@ from app.modules.assistant.llm import (
 from app.modules.assistant.schemas import (
     AssistantChatRequest,
     AssistantChatResponse,
+    AssistantPendingBookingResponse,
     AssistantSourceResponse,
     AssistantToolCallResponse,
 )
@@ -204,4 +205,14 @@ async def chat_with_hotel_assistant_test(
             )
             for tool_call in result.tool_calls
         ],
+        next_action=result.next_action,
+        pending_booking=(
+            AssistantPendingBookingResponse(
+                room_type_name=(result.pending_booking.room_type_name),
+                total_amount=(result.pending_booking.total_amount),
+                currency=(result.pending_booking.currency),
+            )
+            if result.pending_booking is not None
+            else None
+        ),
     )
