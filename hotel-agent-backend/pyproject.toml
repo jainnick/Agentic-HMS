@@ -29,6 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "mypy",
+    "pymupdf",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
