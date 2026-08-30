@@ -32,11 +32,12 @@ if (panel && chat && launcher && closeButton && input && send) {
 
   function enterPanel() {
     if (panel.classList.contains('hidden')) return;
+    const wasOpen = document.body.classList.contains('chat-panel-open');
     document.body.classList.add('chat-panel-open');
     launcher.setAttribute('aria-expanded', 'true');
     panel.setAttribute('aria-hidden', 'false');
     panel.classList.remove('chat-leave');
-    if (!panel.classList.contains('chat-enter')) {
+    if (!wasOpen) {
       panel.classList.add('chat-enter');
       if (!reducedMotion.matches) {
         setTimeout(() => panel.classList.remove('chat-enter'), 380);
@@ -69,7 +70,13 @@ if (panel && chat && launcher && closeButton && input && send) {
 
   // The existing app owns open actions. Observe the class it changes and add motion/a11y state.
   const panelStateObserver = new MutationObserver(() => {
-    if (!panel.classList.contains('hidden')) enterPanel();
+    if (!panel.classList.contains('hidden')) {
+      enterPanel();
+    } else if (!panel.classList.contains('chat-leave')) {
+      document.body.classList.remove('chat-panel-open');
+      launcher.setAttribute('aria-expanded', 'false');
+      panel.setAttribute('aria-hidden', 'true');
+    }
   });
   panelStateObserver.observe(panel, { attributes: true, attributeFilter: ['class'] });
 
