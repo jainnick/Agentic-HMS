@@ -86,8 +86,11 @@ def test_assistant_chat_returns_safe_response(
 ) -> None:
     client, session = assistant_client
 
+    assistant_session_id = uuid4()
+
     assistant_mock = AsyncMock(
         return_value=HotelAssistantResult(
+            session_id=assistant_session_id,
             answer="Checkout is at 11:00 AM.",
             sources=[
                 AssistantSource(
@@ -123,7 +126,11 @@ def test_assistant_chat_returns_safe_response(
     )
 
     assert response.status_code == 200
+
     assert response.json() == {
+        "session_id": str(
+            assistant_session_id
+        ),
         "answer": "Checkout is at 11:00 AM.",
         "sources": [
             {
@@ -140,20 +147,43 @@ def test_assistant_chat_returns_safe_response(
         ],
     }
 
-    assert "model_request_ids" not in response.json()
-    assert "call_id" not in response.json()["tool_calls"][0]
+    assert (
+        "model_request_ids"
+        not in response.json()
+    )
+
+    assert (
+        "call_id"
+        not in response.json()["tool_calls"][0]
+    )
 
     assistant_mock.assert_awaited_once()
 
-    call_arguments = assistant_mock.await_args.kwargs
+    call_arguments = (
+        assistant_mock
+        .await_args
+        .kwargs
+    )
 
-    assert call_arguments["message"] == ("What time is checkout?")
+    assert call_arguments["message"] == (
+        "What time is checkout?"
+    )
 
-    tool_context = call_arguments["context"]
+    tool_context = (
+        call_arguments["context"]
+    )
 
     assert tool_context.session is session
-    assert tool_context.organization_id == (selected_property_context.organization_id)
-    assert tool_context.property_id == (selected_property_context.property_id)
+
+    assert (
+        tool_context.organization_id
+        == selected_property_context.organization_id
+    )
+
+    assert (
+        tool_context.property_id
+        == selected_property_context.property_id
+    )
 
 
 def test_assistant_chat_requires_selected_property(

@@ -79,7 +79,7 @@ def test_disabled_availability_is_not_exposed() -> None:
     }
 
 
-def test_room_booking_is_not_exposed_yet() -> None:
+def test_room_booking_is_exposed_when_enabled() -> None:
     definitions = build_assistant_tool_definitions(
         {
             PropertyToolName.KNOWLEDGE_SEARCH,
@@ -88,6 +88,13 @@ def test_room_booking_is_not_exposed_yet() -> None:
         }
     )
 
-    names = {definition["function"]["name"] for definition in definitions}
+    names = {
+        definition["function"]["name"]
+        for definition in definitions
+    }
 
-    assert "room_booking" not in names
+    assert names == {
+        "knowledge_search",
+        "room_availability",
+        "room_booking",
+    }
