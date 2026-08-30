@@ -96,10 +96,13 @@ def _embedding_endpoint() -> tuple[str, str]:
     if not supabase_url:
         raise EmbeddingModelLoadError("SUPABASE_URL is not configured.")
 
-    key = settings.supabase_service_role_key or settings.supabase_anon_key
+    # Embedding is a public-key-gated Edge Function call. Prefer the project's
+    # public/anon key so this read-only request does not depend on a service-role
+    # secret that may be rotated independently in the deployment environment.
+    key = settings.supabase_anon_key or settings.supabase_service_role_key
     if key is None:
         raise EmbeddingModelLoadError(
-            "SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY must be configured."
+            "SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY must be configured."
         )
 
     api_key = key.get_secret_value().strip()
