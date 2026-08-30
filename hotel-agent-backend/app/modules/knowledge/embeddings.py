@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from functools import lru_cache, partial
-from typing import Any, cast
+import re
+from typing import Any
 
-from anyio import to_thread
-from sentence_transformers import SentenceTransformer
+import httpx
 
 from app.core.config import get_settings
 
 EmbeddingVector = list[float]
+_TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 
 
 class EmbeddingError(Exception):
@@ -20,11 +20,11 @@ class EmbeddingInputError(EmbeddingError):
 
 
 class EmbeddingModelLoadError(EmbeddingError):
-    """Raised when the configured embedding model cannot be loaded."""
+    """Raised when the configured embedding service cannot be reached."""
 
 
 class EmbeddingGenerationError(EmbeddingError):
-    """Raised when the model cannot generate usable embeddings."""
+    """Raised when the embedding service cannot generate usable vectors."""
 
 
 class EmbeddingDimensionError(EmbeddingError):
@@ -32,125 +32,30 @@ class EmbeddingDimensionError(EmbeddingError):
 
 
 class EmbeddingTokenizerError(EmbeddingError):
-    """Raised when the embedding tokenizer cannot process text."""
+    """Raised when text cannot be divided into safe embedding chunks."""
 
 
-@lru_cache(maxsize=1)
-def get_embedding_model() -> SentenceTransformer:
-    """
-    Load and cache the configured embedding model.
-
-    The model is loaded on the first call. Later calls in the same Python
-    process reuse the same model object instead of loading it repeatedly.
-    """
-
-    settings = get_settings()
-
-    try:
-        model = cast(
-            SentenceTransformer,
-            SentenceTransformer(
-                settings.embedding_model,
-            ),
-        )
-    except Exception as exc:
-        raise EmbeddingModelLoadError(
-            "The configured embedding model could not be loaded."
-        ) from exc
-
-    try:
-        model_dimension = model.get_embedding_dimension()
-    except Exception as exc:
-        raise EmbeddingDimensionError(
-            "The embedding model did not report its output dimension."
-        ) from exc
-
-    if model_dimension != settings.embedding_dimension:
-        raise EmbeddingDimensionError(
-            "The embedding model dimension does not match the database. "
-            f"Model dimension: {model_dimension}. "
-            f"Required dimension: {settings.embedding_dimension}."
-        )
-
-    return model
-
-
-def normalize_embedding_text(
-    text: str,
-) -> str:
-    """
-    Normalize whitespace before passing text to the embedding model.
-
-    This converts tabs, line breaks, and repeated spaces into one space.
-    Words and punctuation are otherwise preserved.
-    """
+def normalize_embedding_text(text: str) -> str:
+    """Normalize whitespace before embedding or approximate token counting."""
 
     return " ".join(text.split()).strip()
 
 
-def get_embedding_tokenizer() -> Any:
+def _tokenize(text: str) -> list[str]:
+    return _TOKEN_PATTERN.findall(normalize_embedding_text(text))
+
+
+def count_embedding_tokens(text: str) -> int:
     """
-    Return the tokenizer belonging to the configured embedding model.
+    Return a conservative lightweight token estimate.
 
-    Chunking uses exactly the same tokenizer as embedding generation. This
-    prevents us from guessing chunk limits using approximate word counts.
-    """
-
-    model = get_embedding_model()
-
-    tokenizer = getattr(
-        model,
-        "tokenizer",
-        None,
-    )
-
-    if tokenizer is None:
-        raise EmbeddingTokenizerError("The configured embedding model does not expose a tokenizer.")
-
-    return tokenizer
-
-
-def count_embedding_tokens(
-    text: str,
-) -> int:
-    """
-    Count tokens exactly as the embedding model sees them.
-
-    Special tokens are included because they consume model input capacity.
+    Supabase gte-small accepts up to 512 model tokens. The application keeps
+    chunks far below that limit (220 configured tokens), so a word/punctuation
+    estimate is sufficient here and avoids shipping a multi-gigabyte local
+    transformer runtime with the API service.
     """
 
-    normalized_text = normalize_embedding_text(
-        text,
-    )
-
-    if not normalized_text:
-        return 0
-
-    tokenizer = get_embedding_tokenizer()
-
-    try:
-        token_ids: Any = tokenizer.encode(
-            normalized_text,
-            add_special_tokens=True,
-            truncation=False,
-        )
-
-    except Exception as exc:
-        raise EmbeddingTokenizerError(
-            "The embedding tokenizer could not count text tokens."
-        ) from exc
-
-    if not isinstance(
-        token_ids,
-        list,
-    ):
-        raise EmbeddingTokenizerError(
-            "The embedding tokenizer returned an unsupported token format."
-        )
-
-    return len(
-        token_ids,
-    )
+    return len(_tokenize(text))
 
 
 def split_text_by_embedding_tokens(
@@ -158,189 +63,104 @@ def split_text_by_embedding_tokens(
     max_tokens: int,
     overlap_tokens: int,
 ) -> list[str]:
-    """
-    Last-resort splitter for text that cannot be divided naturally.
-
-    Normal chunking should prefer:
-        PDF block boundary
-        -> sentence boundary
-        -> this token-window fallback
-
-    overlap_tokens is used only here because this is an artificial split.
-    """
+    """Split text into overlapping lightweight token windows."""
 
     if max_tokens <= 0:
         raise EmbeddingTokenizerError("max_tokens must be greater than zero.")
-
     if overlap_tokens < 0:
         raise EmbeddingTokenizerError("overlap_tokens cannot be negative.")
+    if overlap_tokens >= max_tokens:
+        raise EmbeddingTokenizerError("overlap_tokens must be smaller than max_tokens.")
 
-    normalized_text = normalize_embedding_text(
-        text,
-    )
-
-    if not normalized_text:
+    tokens = _tokenize(text)
+    if not tokens:
         return []
+    if len(tokens) <= max_tokens:
+        return [normalize_embedding_text(text)]
 
-    tokenizer = get_embedding_tokenizer()
-
-    try:
-        special_token_count = int(
-            tokenizer.num_special_tokens_to_add(
-                pair=False,
-            )
-        )
-
-    except Exception as exc:
-        raise EmbeddingTokenizerError(
-            "The embedding tokenizer could not determine its special-token count."
-        ) from exc
-
-    available_content_tokens = max_tokens - special_token_count
-
-    if available_content_tokens <= 0:
-        raise EmbeddingTokenizerError("max_tokens is too small for the embedding tokenizer.")
-
-    if overlap_tokens >= available_content_tokens:
-        raise EmbeddingTokenizerError(
-            "overlap_tokens must be smaller than the usable token window."
-        )
-
-    # Protect against accidentally configuring a chunk larger than the
-    # tokenizer/model supports.
-    model_max_length = getattr(
-        tokenizer,
-        "model_max_length",
-        None,
-    )
-
-    if (
-        isinstance(model_max_length, int)
-        and 0 < model_max_length < 1_000_000
-        and max_tokens > model_max_length
-    ):
-        raise EmbeddingTokenizerError(
-            "Configured maximum chunk tokens exceed the embedding "
-            f"model limit of {model_max_length} tokens."
-        )
-
-    try:
-        token_ids: Any = tokenizer.encode(
-            normalized_text,
-            add_special_tokens=False,
-            truncation=False,
-        )
-
-    except Exception as exc:
-        raise EmbeddingTokenizerError("The embedding tokenizer could not split text.") from exc
-
-    if not isinstance(
-        token_ids,
-        list,
-    ):
-        raise EmbeddingTokenizerError(
-            "The embedding tokenizer returned an unsupported token format."
-        )
-
-    if len(token_ids) <= available_content_tokens:
-        return [
-            normalized_text,
-        ]
-
-    step_size = available_content_tokens - overlap_tokens
-
+    step_size = max_tokens - overlap_tokens
     pieces: list[str] = []
-
-    window_start = 0
-
-    while window_start < len(token_ids):
-        window_end = min(
-            window_start + available_content_tokens,
-            len(token_ids),
-        )
-
-        window_ids = token_ids[window_start:window_end]
-
-        try:
-            decoded_text = tokenizer.decode(
-                window_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True,
-            )
-
-        except Exception as exc:
-            raise EmbeddingTokenizerError(
-                "The embedding tokenizer could not decode a token window."
-            ) from exc
-
-        decoded_text = decoded_text.strip()
-
-        if decoded_text:
-            pieces.append(
-                decoded_text,
-            )
-
-        if window_end >= len(token_ids):
+    for start in range(0, len(tokens), step_size):
+        window = tokens[start : start + max_tokens]
+        if not window:
             break
-
-        window_start += step_size
-
+        pieces.append(" ".join(window))
+        if start + max_tokens >= len(tokens):
+            break
     return pieces
 
 
-def convert_model_output(
-    raw_embeddings: Any,
+def _embedding_endpoint() -> tuple[str, str]:
+    settings = get_settings()
+    supabase_url = (settings.supabase_url or "").strip().rstrip("/")
+    if not supabase_url:
+        raise EmbeddingModelLoadError("SUPABASE_URL is not configured.")
+
+    if settings.supabase_anon_key is None:
+        raise EmbeddingModelLoadError("SUPABASE_ANON_KEY is not configured.")
+
+    api_key = settings.supabase_anon_key.get_secret_value().strip()
+    if not api_key:
+        raise EmbeddingModelLoadError("SUPABASE_ANON_KEY is empty.")
+
+    return f"{supabase_url}/functions/v1/embed", api_key
+
+
+def _validate_inputs(
+    texts: list[str],
+    batch_size: int | None,
+) -> tuple[list[str], int]:
+    if not texts:
+        raise EmbeddingInputError("At least one text value is required.")
+
+    settings = get_settings()
+    resolved_batch_size = batch_size if batch_size is not None else settings.embedding_batch_size
+    if resolved_batch_size <= 0:
+        raise EmbeddingInputError("Embedding batch size must be greater than zero.")
+    if resolved_batch_size > 32:
+        resolved_batch_size = 32
+
+    normalized_texts: list[str] = []
+    for text_index, text in enumerate(texts):
+        normalized_text = normalize_embedding_text(text)
+        if not normalized_text:
+            raise EmbeddingInputError(f"Text at index {text_index} is empty.")
+        normalized_texts.append(normalized_text)
+    return normalized_texts, resolved_batch_size
+
+
+def _validate_response(
+    payload: Any,
     *,
     expected_count: int,
-    expected_dimension: int,
 ) -> list[EmbeddingVector]:
-    """
-    Convert the model output into normal Python lists.
+    settings = get_settings()
+    if not isinstance(payload, dict):
+        raise EmbeddingGenerationError("Embedding service returned an invalid response.")
 
-    Sentence Transformers normally returns a NumPy array. The database layer
-    will receive list[float] values, so this function creates that boundary
-    and validates the shape.
-    """
-
-    try:
-        rows: object = raw_embeddings.tolist()
-    except AttributeError as exc:
+    rows = payload.get("embeddings")
+    if not isinstance(rows, list) or len(rows) != expected_count:
         raise EmbeddingGenerationError(
-            "The embedding model returned an unsupported output type."
-        ) from exc
-
-    if not isinstance(rows, list):
-        raise EmbeddingGenerationError("The embedding model did not return a list of vectors.")
-
-    if len(rows) != expected_count:
-        raise EmbeddingGenerationError(
-            "The number of generated embeddings does not match the number of supplied texts."
+            "The number of generated embeddings does not match the supplied texts."
         )
 
     vectors: list[EmbeddingVector] = []
-
     for row_index, row in enumerate(rows):
         if not isinstance(row, list):
             raise EmbeddingGenerationError(f"Embedding row {row_index} is not a vector.")
+        try:
+            vector = [float(value) for value in row]
+        except (TypeError, ValueError) as exc:
+            raise EmbeddingGenerationError(
+                f"Embedding row {row_index} contains a non-numeric value."
+            ) from exc
 
-        vector: EmbeddingVector = []
-
-        for value in row:
-            try:
-                vector.append(float(value))
-            except (TypeError, ValueError) as exc:
-                raise EmbeddingGenerationError(
-                    f"Embedding row {row_index} contains a non-numeric value."
-                ) from exc
-
-        if len(vector) != expected_dimension:
+        if len(vector) != settings.embedding_dimension:
             raise EmbeddingDimensionError(
-                f"Embedding row {row_index} has dimension "
-                f"{len(vector)}, but {expected_dimension} is required."
+                f"Embedding row {row_index} has dimension {len(vector)}, "
+                f"but {settings.embedding_dimension} is required."
             )
-
         vectors.append(vector)
-
     return vectors
 
 
@@ -349,72 +169,45 @@ def embed_texts(
     *,
     batch_size: int | None = None,
 ) -> list[EmbeddingVector]:
-    """
-    Generate embeddings for multiple texts.
+    """Generate embeddings through the lightweight Supabase Edge Function."""
 
-    This function is synchronous because Sentence Transformers performs
-    synchronous model inference. Async FastAPI code should normally call
-    embed_texts_async() instead.
-    """
-
-    if not texts:
-        raise EmbeddingInputError("At least one text value is required.")
-
-    settings = get_settings()
-
-    resolved_batch_size = batch_size if batch_size is not None else settings.embedding_batch_size
-
-    if resolved_batch_size <= 0:
-        raise EmbeddingInputError("Embedding batch size must be greater than zero.")
-
-    normalized_texts: list[str] = []
-
-    for text_index, text in enumerate(texts):
-        normalized_text = normalize_embedding_text(
-            text,
-        )
-
-        if not normalized_text:
-            raise EmbeddingInputError(f"Text at index {text_index} is empty.")
-
-        normalized_texts.append(normalized_text)
-
-    model = get_embedding_model()
+    normalized_texts, resolved_batch_size = _validate_inputs(texts, batch_size)
+    endpoint, api_key = _embedding_endpoint()
+    output: list[EmbeddingVector] = []
 
     try:
-        raw_embeddings: Any = model.encode(
-            normalized_texts,
-            batch_size=resolved_batch_size,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        )
-    except Exception as exc:
-        raise EmbeddingGenerationError("The embedding model failed while encoding text.") from exc
+        with httpx.Client(timeout=30.0) as client:
+            for start in range(0, len(normalized_texts), resolved_batch_size):
+                batch = normalized_texts[start : start + resolved_batch_size]
+                response = client.post(
+                    endpoint,
+                    headers={
+                        "apikey": api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={"inputs": batch},
+                )
+                response.raise_for_status()
+                output.extend(
+                    _validate_response(
+                        response.json(),
+                        expected_count=len(batch),
+                    )
+                )
+    except httpx.HTTPStatusError as exc:
+        raise EmbeddingGenerationError(
+            f"Embedding service returned HTTP {exc.response.status_code}."
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise EmbeddingGenerationError("The embedding service request failed.") from exc
 
-    return convert_model_output(
-        raw_embeddings,
-        expected_count=len(normalized_texts),
-        expected_dimension=settings.embedding_dimension,
-    )
+    return output
 
 
-def embed_query(
-    query: str,
-) -> EmbeddingVector:
-    """
-    Generate one embedding for a search query.
+def embed_query(query: str) -> EmbeddingVector:
+    """Generate one query embedding using the same model as stored chunks."""
 
-    The same model is used for stored document chunks and guest questions,
-    which keeps both values inside the same vector space.
-    """
-
-    vectors = embed_texts(
-        [query],
-        batch_size=1,
-    )
-
-    return vectors[0]
+    return embed_texts([query], batch_size=1)[0]
 
 
 async def embed_texts_async(
@@ -422,30 +215,42 @@ async def embed_texts_async(
     *,
     batch_size: int | None = None,
 ) -> list[EmbeddingVector]:
-    """
-    Run embedding generation in an AnyIO worker thread.
+    """Generate embeddings asynchronously through Supabase Edge Functions."""
 
-    This prevents synchronous model inference from occupying FastAPI's
-    asynchronous event-loop thread.
-    """
+    normalized_texts, resolved_batch_size = _validate_inputs(texts, batch_size)
+    endpoint, api_key = _embedding_endpoint()
+    output: list[EmbeddingVector] = []
 
-    embedding_call = partial(
-        embed_texts,
-        texts,
-        batch_size=batch_size,
-    )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for start in range(0, len(normalized_texts), resolved_batch_size):
+                batch = normalized_texts[start : start + resolved_batch_size]
+                response = await client.post(
+                    endpoint,
+                    headers={
+                        "apikey": api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={"inputs": batch},
+                )
+                response.raise_for_status()
+                output.extend(
+                    _validate_response(
+                        response.json(),
+                        expected_count=len(batch),
+                    )
+                )
+    except httpx.HTTPStatusError as exc:
+        raise EmbeddingGenerationError(
+            f"Embedding service returned HTTP {exc.response.status_code}."
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise EmbeddingGenerationError("The embedding service request failed.") from exc
 
-    return await to_thread.run_sync(
-        embedding_call,
-    )
+    return output
 
 
-async def embed_query_async(
-    query: str,
-) -> EmbeddingVector:
-    """Generate a query embedding in an AnyIO worker thread."""
+async def embed_query_async(query: str) -> EmbeddingVector:
+    """Generate one query embedding asynchronously."""
 
-    return await to_thread.run_sync(
-        embed_query,
-        query,
-    )
+    return (await embed_texts_async([query], batch_size=1))[0]

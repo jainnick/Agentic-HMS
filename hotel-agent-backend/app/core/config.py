@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +17,15 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
 
     # Database
-    database_url: str
+    # Vercel's Supabase integration exposes POSTGRES_URL automatically, while
+    # local development historically used DATABASE_URL. Accept either name so
+    # the same backend works in both environments without duplicating secrets.
+    database_url: str = Field(
+        validation_alias=AliasChoices(
+            "DATABASE_URL",
+            "POSTGRES_URL",
+        )
+    )
     database_pool_size: int = 5
     database_max_overflow: int = 5
     database_timeout_seconds: int = 10
@@ -41,9 +49,9 @@ class Settings(BaseSettings):
 
     # Knowledge embeddings
     #
-    # This model produces 384-dimensional vectors. The value must remain
-    # aligned with knowledge_chunks.embedding VECTOR(384).
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Supabase Edge Function `embed` uses gte-small and produces 384-dimensional
+    # vectors. Keep this dimension aligned with knowledge_chunks.embedding.
+    embedding_model: str = "gte-small"
     embedding_dimension: int = 384
     embedding_batch_size: int = 32
 
@@ -51,15 +59,6 @@ class Settings(BaseSettings):
     knowledge_max_upload_mb: int = 10
 
     # Adaptive PDF chunking.
-    #
-    # target_tokens:
-    #     preferred chunk size when a natural PDF block boundary exists.
-    #
-    # max_tokens:
-    #     hard upper limit before sentence/token splitting is required.
-    #
-    # fallback_overlap_tokens:
-    #     overlap used only for forced tokenizer-window splitting.
     knowledge_chunk_target_tokens: int = 160
     knowledge_chunk_max_tokens: int = 220
     knowledge_chunk_fallback_overlap_tokens: int = 20
@@ -94,12 +93,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_knowledge_configuration(self) -> Settings:
-        """
-        Reject settings that would make ingestion unreliable.
-
-        The database currently stores VECTOR(384), so a different embedding
-        dimension would cause inserts to fail.
-        """
+        """Reject settings that would make ingestion or assistant runtime unreliable."""
 
         if self.embedding_dimension != 384:
             raise ValueError(
@@ -148,12 +142,14 @@ class Settings(BaseSettings):
         if self.assistant_max_message_length <= 0:
             raise ValueError("ASSISTANT_MAX_MESSAGE_LENGTH must be greater than zero.")
 
-        if not 1 <= self.assistant_max_tool_rounds <= 10:
-            raise ValueError("ASSISTANT_MAX_TOOL_ROUNDS must be between 1 and 10.")
+        if self.assistant_max_tool_rounds <= 0:
+            raise ValueError("ASSISTANT_MAX_TOOL_ROUNDS must be greater than zero.")
 
         return self
 
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the process-wide validated settings object."""
+
     return Settings()
