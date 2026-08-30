@@ -96,14 +96,25 @@ def _embedding_endpoint() -> tuple[str, str]:
     if not supabase_url:
         raise EmbeddingModelLoadError("SUPABASE_URL is not configured.")
 
-    if settings.supabase_anon_key is None:
-        raise EmbeddingModelLoadError("SUPABASE_ANON_KEY is not configured.")
+    key = settings.supabase_service_role_key or settings.supabase_anon_key
+    if key is None:
+        raise EmbeddingModelLoadError(
+            "SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY must be configured."
+        )
 
-    api_key = settings.supabase_anon_key.get_secret_value().strip()
+    api_key = key.get_secret_value().strip()
     if not api_key:
-        raise EmbeddingModelLoadError("SUPABASE_ANON_KEY is empty.")
+        raise EmbeddingModelLoadError("The configured Supabase API key is empty.")
 
     return f"{supabase_url}/functions/v1/embed", api_key
+
+
+def _embedding_headers(api_key: str) -> dict[str, str]:
+    return {
+        "apikey": api_key,
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
 
 def _validate_inputs(
@@ -181,10 +192,7 @@ def embed_texts(
                 batch = normalized_texts[start : start + resolved_batch_size]
                 response = client.post(
                     endpoint,
-                    headers={
-                        "apikey": api_key,
-                        "Content-Type": "application/json",
-                    },
+                    headers=_embedding_headers(api_key),
                     json={"inputs": batch},
                 )
                 response.raise_for_status()
@@ -227,10 +235,7 @@ async def embed_texts_async(
                 batch = normalized_texts[start : start + resolved_batch_size]
                 response = await client.post(
                     endpoint,
-                    headers={
-                        "apikey": api_key,
-                        "Content-Type": "application/json",
-                    },
+                    headers=_embedding_headers(api_key),
                     json={"inputs": batch},
                 )
                 response.raise_for_status()
