@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # Supabase project configuration.
     supabase_url: str | None = None
     supabase_anon_key: SecretStr | None = None
+    supabase_publishable_key: SecretStr | None = None
     supabase_service_role_key: SecretStr | None = None
 
     # Supabase user access tokens normally use "authenticated".
