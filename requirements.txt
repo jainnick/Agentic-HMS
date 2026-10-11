@@ -8,7 +8,7 @@ pydantic-settings
 tzdata
 
 # Database and migrations
-SQLAlchemy
+SQLAlchemy[asyncio]
 asyncpg
 alembic
 
