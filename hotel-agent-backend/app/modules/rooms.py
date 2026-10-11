@@ -656,7 +656,18 @@ async def require_room_tool_enabled(
 def validate_stay(
     request: RoomAvailabilityRequest,
 ) -> int:
-    """Validate dates and return the number of nights."""
+    """Validate stay dates using Indian Standard Time."""
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+
+    if request.check_in < today:
+        raise RoomValidationError(
+            f"Check-in date {request.check_in} is in the past. "
+            f"Today is {today}. "
+            "Ask the guest to clarify the intended dates. "
+            "Do not automatically change the year."
+        )
 
     if request.check_out <= request.check_in:
         raise RoomValidationError("Check-out must be after check-in.")
